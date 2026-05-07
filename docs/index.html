@@ -10,7 +10,6 @@
       --bg: #060907;
       --bg-soft: #0b120d;
       --panel: rgba(11, 18, 13, 0.9);
-      --panel-2: rgba(14, 23, 16, 0.92);
       --fg: #ddf7e2;
       --muted: #8cb194;
       --line: rgba(83, 181, 104, 0.18);
@@ -70,6 +69,7 @@
     .matrix-card,
     .install-card,
     .paths-card,
+    .signal-card,
     .footer {
       border: 1px solid var(--line);
       border-radius: 24px;
@@ -151,6 +151,10 @@
       background: linear-gradient(180deg, rgba(104,255,134,0.24), rgba(46,230,109,0.13));
       border-color: rgba(104, 255, 134, 0.34);
     }
+    .cta:hover {
+      border-color: rgba(104, 255, 134, 0.34);
+      background: rgba(104, 255, 134, 0.08);
+    }
     .hero-side {
       padding: 20px;
       display: flex;
@@ -199,6 +203,21 @@
       font-size: 13px;
       line-height: 1.6;
       margin: 0;
+    }
+    .signal-strip {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin: 0 0 30px;
+    }
+    .signal-card {
+      padding: 18px;
+    }
+    .signal-card p {
+      margin: 12px 0 0;
+      color: #c6dec8;
+      font-size: 14px;
+      line-height: 1.7;
     }
     .section {
       margin-top: 34px;
@@ -284,7 +303,8 @@
       .hero,
       .split,
       .matrix,
-      .stats {
+      .stats,
+      .signal-strip {
         grid-template-columns: 1fr;
       }
       .hero-copy {
@@ -311,12 +331,13 @@
         <div>
           <div class="kicker">inspect what the UI leaves out</div>
           <h1>neo</h1>
-          <p class="lede">The local traces are the evidence surface.</p>
+          <p class="lede">The interesting part is what stayed on disk.</p>
           <p class="body-copy">
-            neo reads the artifacts Claude Code leaves on disk: reminder injections,
-            transcripts, subagent copies, telemetry leftovers, memory files, and
-            hook-visible lifecycle events. It indexes them into SQLite and exposes
-            them through a local dashboard and MCP server.
+            neo reads Claude Code's local artifacts directly: hidden reminders,
+            raw transcripts, subagent copies, telemetry leftovers, memory files,
+            and hook-visible lifecycle events. It indexes them into SQLite and
+            exposes them through a dashboard and MCP server running on the same
+            machine.
           </p>
           <div class="pill-row">
             <span class="pill">measured</span>
@@ -329,7 +350,7 @@
         <div class="cta-row">
           <a class="cta primary" href="https://github.com/asuramaya/neo">open repo</a>
           <a class="cta" href="#install">install</a>
-          <a class="cta" href="#captures">what it captures</a>
+          <a class="cta" href="#surfaces">see the surfaces</a>
         </div>
       </div>
 
@@ -338,13 +359,14 @@
         <div class="side-card">
           <div class="label">why it exists</div>
           <p>
-            The export boundary hides some of the most interesting evidence.
-            neo starts from the raw JSONL and local state instead.
+            The export boundary strips some of the most interesting material.
+            neo starts from raw JSONL and local state instead of the cleaned
+            transcript.
           </p>
         </div>
         <div class="side-card">
           <div class="label">package</div>
-          <p><code>pipx install neo-harnesster</code><br>command stays <code>neo</code>.</p>
+          <p><code>pipx install neo-harnesster</code><br>package name changed. command stayed <code>neo</code>.</p>
         </div>
       </aside>
     </section>
@@ -370,6 +392,31 @@
         <div class="stat-value">33,361</div>
         <p class="stat-copy">retained telemetry rows surfaced locally instead of treated as an implementation detail.</p>
       </div>
+    </section>
+
+    <section class="signal-strip">
+      <article class="signal-card">
+        <div class="label">export boundary</div>
+        <p>
+          Claude Code exports cleaner transcripts than the local corpus actually
+          contains. neo exists in the gap between those two surfaces.
+        </p>
+      </article>
+      <article class="signal-card">
+        <div class="label">local first</div>
+        <p>
+          The dashboard binds to localhost, the database lives under
+          <code>~/.neo/</code>, and the project does not transmit your data
+          anywhere.
+        </p>
+      </article>
+      <article class="signal-card">
+        <div class="label">same-machine mcp</div>
+        <p>
+          The environment can be queried from inside itself: `neo-mcp` exposes
+          the local evidence model back into Claude Code.
+        </p>
+      </article>
     </section>
 
     <section class="section">
@@ -407,7 +454,7 @@
       </div>
     </section>
 
-    <section class="section">
+    <section class="section" id="surfaces">
       <div class="section-head">
         <div>Surfaces</div>
         <div>browser · terminal · mcp</div>
@@ -417,8 +464,9 @@
           <div class="label">dashboard</div>
           <h3>Browser-first local inspection</h3>
           <p>
-            Summary cards, reminders, correlations, sessions, agents, memory
-            files, telemetry, and state-model analysis served from localhost.
+            Summary cards, reminders with provenance, sessions, agents,
+            correlations, telemetry, memory files, and state-model analysis
+            served from localhost.
           </p>
         </article>
         <article class="matrix-card">
@@ -433,8 +481,8 @@
           <div class="label">terminal</div>
           <h3>Quick accounting without the UI</h3>
           <p>
-            `neo-tokens` and `neo-states` provide fast access to the accounting
-            and state-model views when a browser is overkill.
+            `neo-tokens` and `neo-states` give you the accounting and
+            state-model views directly when a browser is unnecessary.
           </p>
         </article>
       </div>
