@@ -13,7 +13,7 @@
 
 <p align="center">
   <a href="https://asuramaya.github.io/neo/"><b>Website</b></a> ·
-  <a href="https://github.com/asuramaya/neo/blob/main/src/neo/dashboard.html">Dashboard surface</a> ·
+  <a href="https://asuramaya.github.io/neo/#surfaces">Dashboard surface</a> ·
   <a href="https://github.com/asuramaya/neo/blob/main/security_best_practices_report.md">Security notes</a>
 </p>
 
