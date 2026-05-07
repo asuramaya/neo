@@ -6,3 +6,9 @@ __pycache__/
 harness_log.jsonl
 .pytest_cache/
 local
+output/
+.codex
+build/
+dist/
+*.egg-info/
+neo_resources/

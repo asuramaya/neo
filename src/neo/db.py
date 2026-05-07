@@ -1,5 +1,5 @@
 """
-harnesster data layer — one database, all sources
+neo data layer — one database, all sources
 
 Production notes:
 - preserves foreign-key identities during upserts
@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 CLAUDE_DIR = Path.home() / ".claude"
-DB_PATH = Path.home() / ".harnesster" / "harnesster.db"
+DB_PATH = Path.home() / ".neo" / "neo.db"
 MAX_MEMORY_FILE_BYTES = 5000
 MAX_REMINDER_CONTENT_BYTES = 4000
 MAX_MESSAGE_CONTENT_BYTES = 3000
@@ -170,9 +170,27 @@ def _iter_message_text_chunks(content) -> Iterator[str]:
     for item in content:
         if not isinstance(item, dict):
             continue
-        text = item.get("content")
-        if isinstance(text, str):
-            yield text
+        for key in ("text", "content"):
+            text = item.get(key)
+            if isinstance(text, str):
+                yield text
+
+
+def _read_first_jsonl_entry(path: Path) -> dict:
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    return json.loads(line)
+    except Exception:
+        pass
+    return {}
+
+
+def _is_compaction_file(path: Path) -> bool:
+    entry = _read_first_jsonl_entry(path)
+    return entry.get("isCompaction") is True or "compact" in path.name
 
 
 def _extract_system_reminder_text(text: str) -> str | None:
@@ -288,7 +306,8 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY,
             timestamp TEXT,
             event_type TEXT,
-            data_json TEXT
+            data_json TEXT,
+            source TEXT
         );
 
         CREATE TABLE IF NOT EXISTS tasks (
@@ -321,6 +340,10 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_reminders_source ON system_reminders(source_file, line_number);
         """
     )
+    try:
+        conn.execute("ALTER TABLE hook_events ADD COLUMN source TEXT")
+    except sqlite3.OperationalError:
+        pass
     _commit_and_harden(conn)
 
 
@@ -542,8 +565,8 @@ def ingest_sessions(conn: sqlite3.Connection) -> int:
                     path for path in _iter_safe_entries(sa_dir)
                     if _is_safe_regular_file(path) and path.suffix == ".jsonl"
                 ]
-            compacts = [path for path in agent_files if "compact" in path.name]
-            regulars = [path for path in agent_files if "compact" not in path.name]
+            compacts = [path for path in agent_files if _is_compaction_file(path)]
+            regulars = [path for path in agent_files if not _is_compaction_file(path)]
 
             try:
                 session_mtime = datetime.fromtimestamp(session.stat().st_mtime).isoformat()
@@ -562,13 +585,13 @@ def ingest_sessions(conn: sqlite3.Connection) -> int:
             keep_agent_file_names: set[str] = set()
             for transcript in agent_files:
                 keep_agent_file_names.add(transcript.name)
-                is_compact = 1 if "compact" in transcript.name else 0
                 try:
                     mtime = datetime.fromtimestamp(transcript.stat().st_mtime).isoformat()
                     size_bytes = transcript.stat().st_size
                 except OSError:
                     continue
 
+                is_compact = 1 if _is_compaction_file(transcript) else 0
                 agent_id = _upsert_agent(
                     conn,
                     project_name,
@@ -623,11 +646,12 @@ def ingest_hooks(conn: sqlite3.Connection) -> int:
                 except json.JSONDecodeError:
                     continue
                 conn.execute(
-                    "INSERT INTO hook_events (timestamp, event_type, data_json) VALUES (?, ?, ?)",
+                    "INSERT INTO hook_events (timestamp, event_type, data_json, source) VALUES (?, ?, ?, ?)",
                     (
                         event.get("timestamp", ""),
                         event.get("event_type", ""),
                         json.dumps(event.get("data", {})),
+                        event.get("source"),
                     ),
                 )
                 count += 1
@@ -755,7 +779,7 @@ def summary() -> dict:
             "telemetry": conn.execute("SELECT COUNT(*) FROM telemetry").fetchone()[0],
             "sessions": conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0],
             "agents": conn.execute("SELECT COUNT(*) FROM agents WHERE is_compaction=0").fetchone()[0],
-            "compactions": conn.execute("SELECT COUNT(*) FROM agents WHERE is_compaction=1").fetchone()[0],
+            "compactions": conn.execute("SELECT COUNT(*) FROM hook_events WHERE event_type='post_compact'").fetchone()[0],
             "messages": conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0],
             "memory_files": conn.execute("SELECT COUNT(*) FROM memory_files").fetchone()[0],
             "hook_events": conn.execute("SELECT COUNT(*) FROM hook_events").fetchone()[0],

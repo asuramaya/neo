@@ -1,5 +1,5 @@
 """
-harnesster state model — approximate Claude Code behavior from local data
+neo state model — approximate Claude Code behavior from local data
 
 States here are inferred from local hook events, telemetry artifacts,
 and timing patterns. They are useful heuristics, not direct access to
@@ -145,7 +145,7 @@ ANOMALIES = {
 def count_reminders_from_db():
     """Count system reminders found in conversation exports."""
     try:
-        db_path = Path.home() / ".harnesster" / "harnesster.db"
+        db_path = Path.home() / ".neo" / "neo.db"
         if not db_path.exists():
             return 0
         conn = sqlite3.connect(str(db_path))
@@ -265,9 +265,11 @@ def get_state_diagram():
     }
 
 
-if __name__ == "__main__":
+def main(argv=None) -> None:
     import sys
-    if len(sys.argv) > 1 and sys.argv[1] == "diagram":
+
+    args = list(sys.argv[1:] if argv is None else argv)
+    if len(args) > 0 and args[0] == "diagram":
         d = get_state_diagram()
         print("STATES:")
         for k, v in d["states"].items():
@@ -283,3 +285,7 @@ if __name__ == "__main__":
             print("    meaning: " + v["meaning"])
     else:
         print("usage: python3 states.py diagram")
+
+
+if __name__ == "__main__":
+    main()

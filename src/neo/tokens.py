@@ -1,5 +1,5 @@
 """
-harnesster token accounting — measure what's real, flag what's estimated
+neo token accounting — measure what's real, flag what's estimated
 
 Uses local file sizes and transcript structure as proxies. Does NOT
 fabricate token counts from character division. Shows relative
@@ -136,6 +136,28 @@ def analyze_session_file(filepath):
     return stats
 
 
+def _read_first_entry(filepath) -> dict:
+    try:
+        with open(filepath, encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    return json.loads(line)
+    except Exception:
+        pass
+    return {}
+
+
+def _classify_subagent(filepath) -> str:
+    """Return 'sidechain', 'compaction', or 'agent' based on file content."""
+    entry = _read_first_entry(filepath)
+    if entry.get("isSidechain") is True:
+        return "sidechain"
+    if entry.get("isCompaction") is True or "compact" in filepath.name:
+        return "compaction"
+    return "agent"
+
+
 def analyze_all_channels(session_dir):
     """Analyze all channels for a session."""
     channels = {
@@ -170,9 +192,10 @@ def analyze_all_channels(session_dir):
                          "api_calls_with_usage": 0, "reported_input_tokens": 0,
                          "reported_output_tokens": 0, "has_real_usage": False,
                          "user_messages": 0, "assistant_messages": 0, "system_messages": 0, "tool_results": 0}
-            if "compact" in f.name:
+            kind = _classify_subagent(f)
+            if kind == "compaction":
                 channels["compactions"].append(stats)
-            elif "aside_question" in f.name:
+            elif kind == "sidechain":
                 channels["sidechains"].append(stats)
             else:
                 channels["subagents"].append(stats)
@@ -276,13 +299,18 @@ def summary():
     total_transmissions = sum(r["transmissions"] for r in results)
     # get reminder count from db (db.py finds them reliably, file scanning doesn't)
     try:
-        import db as _db
+        from . import db as _db
         total_reminders = _db.summary().get("system_reminders", 0)
     except Exception:
         total_reminders = sum(r["system_reminders"] for r in results)
     total_sidechains = sum(r["sidechain_count"] for r in results)
     total_subagents = sum(r["subagent_count"] for r in results)
-    total_compactions = sum(r["compaction_count"] for r in results)
+    try:
+        from . import db as _db
+        rows = _db.query("SELECT COUNT(*) as c FROM hook_events WHERE event_type='post_compact'")
+        total_compactions = rows[0]["c"] if rows else 0
+    except Exception:
+        total_compactions = sum(r["compaction_count"] for r in results)
 
     # for real token count, run /usage in Claude Code
 
@@ -306,10 +334,10 @@ def summary():
     }
 
 
-if __name__ == "__main__":
+def main(argv=None) -> None:
     s = summary()
     t = s["totals"]
-    print("HARNESSTER — DATA ACCOUNTING")
+    print("NEO — DATA ACCOUNTING")
     print("=" * 50)
     print(f"Sessions analyzed:     {t['sessions_analyzed']}")
     print(f"Data on disk:")
@@ -329,3 +357,7 @@ if __name__ == "__main__":
     print("Per session (top 10 by data volume):")
     for r in sorted(s["sessions"], key=lambda x: x["total_size_kb"], reverse=True)[:10]:
         print(f"  {r['project']:25s} {r['session_id']}  {r['total_size_kb']:>8.0f}KB  {r['multiplier']}x  {r['transmissions']:>3} tx  {r['sidechain_count']} sides  {r['system_reminders']} reminders")
+
+
+if __name__ == "__main__":
+    main()

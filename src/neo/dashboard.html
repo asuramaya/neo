@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>harnesster</title>
+<title>neo</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0d1117;color:#c9d1d9;font-family:'SF Mono','Fira Code',monospace;font-size:13px;padding:20px 40px;max-width:1400px;margin:0 auto}
@@ -87,7 +87,7 @@ code{background:#1c2128;padding:1px 3px;border-radius:2px;font-size:10px}
 <body>
 
 <div class="topbar">
-  <h1>harnesster</h1>
+  <h1>neo</h1>
   <div class="actions">
     <button class="refresh" onclick="loadAll()">refresh</button>
     <button class="refresh" id="ingestBtn" onclick="runIngest()">ingest now</button>
@@ -274,8 +274,9 @@ function eventsPerHour(count, start, end) {
   var a = parseTime(start);
   var b = parseTime(end);
   if (!a || !b) return null;
-  var hours = (b.getTime() - a.getTime()) / 3600000;
-  if (hours <= 0) return null;
+  var ms = b.getTime() - a.getTime();
+  if (ms < 60000) return null;  // < 60s span is startup noise, not a real rate
+  var hours = ms / 3600000;
   return Math.round(Number(count || 0) / hours);
 }
 
@@ -295,6 +296,16 @@ function sortedCounts(counts) {
     return a.key.localeCompare(b.key);
   });
   return entries;
+}
+
+function timeValue(value) {
+  var parsed = parseTime(value);
+  return parsed ? parsed.getTime() : 0;
+}
+
+function topCountEntry(counts) {
+  var entries = sortedCounts(counts);
+  return entries.length ? entries[0] : null;
 }
 
 function summaryGrid(cards) {
@@ -363,6 +374,20 @@ function isReminderSecrecyLine(line) {
          lower.indexOf('dont tell the user') !== -1;
 }
 
+function reminderSignals(text) {
+  var lines = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  var nonBlankLines = 0;
+  var secrecyLines = 0;
+  for (var i = 0; i < lines.length; i++) {
+    if (lines[i].trim()) nonBlankLines += 1;
+    if (isReminderSecrecyLine(lines[i])) secrecyLines += 1;
+  }
+  return {
+    lines: nonBlankLines,
+    secrecy_lines: secrecyLines
+  };
+}
+
 function renderReminderBody(text) {
   var lines = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
   var html = '<div class="reminder-body">';
@@ -376,15 +401,19 @@ function renderReminderBody(text) {
   return html + '</div>';
 }
 
-function renderReminder(reminder) {
+function renderReminder(reminder, now) {
   var info = reminderSourceInfo(reminder.source_file);
   var kind = reminderType(reminder.content);
+  var signals = reminderSignals(reminder.content || '');
+  var relative = relativeTime(reminder.timestamp, now);
   var html = '<div class="reminder-card">';
   html += '<div class="reminder-top">';
   html += '<div><span class="reminder-type">' + esc(kind) + '</span>';
+  if (signals.secrecy_lines > 0) html += ' <span class="reminder-chip">secrecy ' + signals.secrecy_lines + '</span>';
+  if (signals.lines > 1) html += ' <span class="reminder-chip">' + signals.lines + ' lines</span>';
   html += '<div class="reminder-meta">' + esc(info.project) + ' / <code>' + esc(info.session) + '</code></div>';
   html += '<div class="reminder-source">' + esc(info.file) + ':' + esc(reminder.line_number) + '</div></div>';
-  html += '<div class="reminder-time">' + esc(timeLabel(reminder.timestamp)) + '</div>';
+  html += '<div class="reminder-time">' + esc(relative) + '<br>' + esc(timeLabel(reminder.timestamp)) + '</div>';
   html += '</div>';
   html += renderReminderBody(reminder.content || '');
   html += '</div>';
@@ -449,7 +478,15 @@ var DEFAULT_OPEN_PANELS = {
 
 function getPanelPrefs() {
   try {
-    var raw = localStorage.getItem('harnesster.panels');
+    var raw = localStorage.getItem('neo.panels');
+    if (!raw) {
+      // one-time migration from the legacy key
+      raw = localStorage.getItem('harnesster.panels');
+      if (raw) {
+        localStorage.setItem('neo.panels', raw);
+        try { localStorage.removeItem('harnesster.panels'); } catch (e) {}
+      }
+    }
     return raw ? JSON.parse(raw) : {};
   } catch (ex) {
     return {};
@@ -460,7 +497,7 @@ function setPanelPref(key, value) {
   try {
     var prefs = getPanelPrefs();
     prefs[key] = !!value;
-    localStorage.setItem('harnesster.panels', JSON.stringify(prefs));
+    localStorage.setItem('neo.panels', JSON.stringify(prefs));
   } catch (ex) {}
 }
 
@@ -571,11 +608,11 @@ function loadAll() {
     if (status.settings_parse_error) {
       o += '<div class="onboard"><h3>setup status</h3><p>Claude Code settings were found but could not be parsed.</p><div class="steps"><div><code>' + esc(status.settings_parse_error) + '</code></div></div></div>';
     } else if (!status.has_settings) {
-      o += '<div class="onboard"><h3>getting started</h3><p>Claude Code settings were not found on this machine yet, so harnesster has nothing to hook into.</p><div class="steps"><div>1. Install and launch Claude Code once so <code>~/.claude/settings.json</code> exists.</div><div>2. Run <code>python3 harnesster.py --setup</code>.</div><div>3. Restart Claude Code, use it, then click <code>ingest now</code>.</div></div></div>';
+      o += '<div class="onboard"><h3>getting started</h3><p>Claude Code settings were not found on this machine yet, so neo has nothing to hook into.</p><div class="steps"><div>1. Install and launch Claude Code once so <code>~/.claude/settings.json</code> exists.</div><div>2. Run <code>python3 neo.py --setup</code>.</div><div>3. Restart Claude Code, use it, then click <code>ingest now</code>.</div></div></div>';
     } else if (!status.installed_probe_exists || !status.hooks_configured) {
-      o += '<div class="onboard"><h3>setup incomplete</h3><p>harnesster can read the database, but Claude Code hooks are not fully installed yet.</p><div class="steps"><div>1. Run <code>python3 harnesster.py --setup</code>.</div><div>2. Restart Claude Code so the new hooks load.</div><div>3. Use Claude Code once, then click <code>ingest now</code>.</div></div></div>';
+      o += '<div class="onboard"><h3>setup incomplete</h3><p>neo can read the database, but Claude Code hooks are not fully installed yet.</p><div class="steps"><div>1. Run <code>python3 neo.py --setup</code>.</div><div>2. Restart Claude Code so the new hooks load.</div><div>3. Use Claude Code once, then click <code>ingest now</code>.</div></div></div>';
     } else if ((sum.sessions || 0) === 0 && (sum.telemetry || 0) === 0 && (sum.hook_events || 0) === 0) {
-      o += '<div class="onboard"><h3>waiting for data</h3><p>The hooks appear to be installed, but this database is still empty.</p><div class="steps"><div>1. Restart Claude Code after setup.</div><div>2. Use Claude Code for a session.</div><div>3. Click <code>ingest now</code> or run <code>python3 harnesster.py --ingest</code>.</div></div></div>';
+      o += '<div class="onboard"><h3>waiting for data</h3><p>The hooks appear to be installed, but this database is still empty.</p><div class="steps"><div>1. Restart Claude Code after setup.</div><div>2. Use Claude Code for a session.</div><div>3. Click <code>ingest now</code> or run <code>python3 neo.py --ingest</code>.</div></div></div>';
     }
 
     o += '<div class="cards">';
@@ -628,26 +665,98 @@ function loadAll() {
     if (reminders.length === 0) {
       o += emptyNote('no reminders found in the current database');
     } else {
+      var loadedDate = parseTime(loadedAt) || new Date();
+      var sortedReminders = reminders.slice().sort(function(a, b) {
+        var bt = timeValue(b.timestamp);
+        var at = timeValue(a.timestamp);
+        if (bt !== at) return bt - at;
+        return Number(b.line_number || 0) - Number(a.line_number || 0);
+      });
       var reminderCounts = {};
-      for (var i = 0; i < reminders.length; i++) {
-        var kind = reminderType(reminders[i].content);
+      var reminderProjects = {};
+      var secrecyReminderCount = 0;
+      var secrecyLineCount = 0;
+      var multilineReminders = 0;
+      for (var i = 0; i < sortedReminders.length; i++) {
+        var reminder = sortedReminders[i];
+        var kind = reminderType(reminder.content);
+        var info = reminderSourceInfo(reminder.source_file);
+        var signals = reminderSignals(reminder.content);
         reminderCounts[kind] = (reminderCounts[kind] || 0) + 1;
+        if (!reminderProjects[info.project]) {
+          reminderProjects[info.project] = {
+            project: info.project,
+            count: 0,
+            latest_timestamp: reminder.timestamp || '',
+            latest_value: timeValue(reminder.timestamp)
+          };
+        }
+        reminderProjects[info.project].count += 1;
+        if (timeValue(reminder.timestamp) > reminderProjects[info.project].latest_value) {
+          reminderProjects[info.project].latest_timestamp = reminder.timestamp || '';
+          reminderProjects[info.project].latest_value = timeValue(reminder.timestamp);
+        }
+        if (signals.secrecy_lines > 0) secrecyReminderCount += 1;
+        secrecyLineCount += signals.secrecy_lines;
+        if (signals.lines > 1) multilineReminders += 1;
       }
       var reminderKinds = Object.keys(reminderCounts).sort(function(a, b) {
         if (reminderCounts[b] !== reminderCounts[a]) return reminderCounts[b] - reminderCounts[a];
         return a.localeCompare(b);
       });
+      var dominantReminder = topCountEntry(reminderCounts);
+      var reminderProjectRows = Object.keys(reminderProjects).map(function(key) {
+        return reminderProjects[key];
+      }).sort(function(a, b) {
+        if (b.count !== a.count) return b.count - a.count;
+        if (b.latest_value !== a.latest_value) return b.latest_value - a.latest_value;
+        return a.project.localeCompare(b.project);
+      });
+      o += summaryGrid([
+        { value: numberFmt(sortedReminders.length), label: 'latest reminder rows shown' },
+        { value: numberFmt(Object.keys(reminderProjects).length), label: 'projects with reminders' },
+        { value: numberFmt(secrecyReminderCount), label: 'rows with secrecy language' },
+        { value: dominantReminder ? esc(dominantReminder.key) : 'other', label: 'most common reminder type' }
+      ]);
+      var reminderDigest = [];
+      if (dominantReminder) {
+        reminderDigest.push('Most common reminder class: ' + dominantReminder.key + ' at ' + percentLabel(dominantReminder.count, sortedReminders.length) + ' of the visible reminder slice.');
+      }
+      if (secrecyReminderCount > 0) {
+        reminderDigest.push(numberFmt(secrecyReminderCount) + ' reminder row' + (secrecyReminderCount === 1 ? '' : 's') + ' contain ' + numberFmt(secrecyLineCount) + ' explicit secrecy line' + (secrecyLineCount === 1 ? '' : 's') + '.');
+      } else {
+        reminderDigest.push('No explicit secrecy wording appears in the currently shown reminder slice.');
+      }
+      if (reminderProjectRows.length > 0) {
+        reminderDigest.push(reminderProjectRows[0].project + ' has the heaviest reminder concentration in the current slice with ' + numberFmt(reminderProjectRows[0].count) + ' row' + (reminderProjectRows[0].count === 1 ? '' : 's') + '.');
+      }
+      if (multilineReminders > 0) {
+        reminderDigest.push(numberFmt(multilineReminders) + ' reminder row' + (multilineReminders === 1 ? '' : 's') + ' span multiple lines, which usually means more instruction payload than a short inline nudge.');
+      }
+      o += patternBlock('what stands out', reminderDigest);
       o += '<div class="reminder-summary">';
       for (var i = 0; i < reminderKinds.length; i++) {
         var kind = reminderKinds[i];
         o += '<div class="reminder-chip">' + esc(kind) + ' ' + reminderCounts[kind] + '</div>';
       }
       o += '</div>';
-      for (var i = 0; i < reminders.length; i++) {
-        o += renderReminder(reminders[i]);
+      var reminderRows = [];
+      for (var i = 0; i < Math.min(reminderProjectRows.length, 8); i++) {
+        var projectRow = reminderProjectRows[i];
+        reminderRows.push([
+          esc(projectRow.project),
+          numberFmt(projectRow.count),
+          '<span title="' + esc(timeLabel(projectRow.latest_timestamp)) + '">' + esc(relativeTime(projectRow.latest_timestamp, loadedDate)) + '</span>'
+        ]);
       }
-      if ((sum.system_reminders || 0) > reminders.length) {
-        o += '<div class="note">' + ((sum.system_reminders || 0) - reminders.length) + ' more not shown</div>';
+      o += '<div class="note"><span class="pill">projects</span>Reminder concentration by project in the currently shown slice.</div>';
+      o += makeTable(['project', 'rows', 'latest seen'], reminderRows, 'no reminder project rollup available');
+      o += '<div class="note"><span class="pill">recent</span>Latest parsed reminder payloads, sorted by retained event timestamp.</div>';
+      for (var i = 0; i < sortedReminders.length; i++) {
+        o += renderReminder(sortedReminders[i], loadedDate);
+      }
+      if ((sum.system_reminders || 0) > sortedReminders.length) {
+        o += '<div class="note">' + ((sum.system_reminders || 0) - sortedReminders.length) + ' more not shown</div>';
       }
     }
     o += '</div>';
@@ -1107,17 +1216,20 @@ function loadAll() {
       var hookTotal = 0;
       for (var hk in hookCounts) hookTotal += hookCounts[hk];
       var toolBoundaryHooks = (hookCounts.pretool || 0) + (hookCounts.posttool || 0) + (hookCounts.posttool_fail || 0);
+      var hookEntries = sortedCounts(hookCounts);
+      var leadHook = hookEntries.length ? hookEntries[0] : null;
       sessionRows.sort(function(a, b) {
         return Number(b.event_count || 0) - Number(a.event_count || 0);
       });
       var densestSession = sessionRows[0] || null;
+      var densestSessionRate = densestSession ? eventsPerHour(densestSession.event_count, densestSession.first_seen, densestSession.last_seen) : null;
 
       if (projectRows.length > 0 || telemetryRows.length > 0 || sessionRows.length > 0 || hookRows.length > 0) {
         o += summaryGrid([
           { value: percentLabel(topProjectLogs, totalProjectLogs), label: 'top 3 projects share' },
-          { value: percentLabel(toolBoundaryHooks, hookTotal), label: 'tool-boundary hooks' },
+          { value: compactionLeader ? percentLabel(compactionLeader.compactions, compactionLeader.total) : '0%', label: 'highest compaction rate' },
           { value: percentLabel(executionTelemetryCount, totalTelemetryEvents), label: 'execution telemetry share' },
-          { value: densestSession ? numberFmt(densestSession.event_count) : '0', label: 'densest session events' }
+          { value: densestSessionRate === null ? 'n/a' : numberFmt(densestSessionRate) + '/hr', label: 'densest session rate' }
         ]);
 
         var corrDigest = [];
@@ -1132,6 +1244,9 @@ function loadAll() {
         }
         if (hookTotal > 0) {
           corrDigest.push('Local hooks are ' + percentLabel(toolBoundaryHooks, hookTotal) + ' tool boundaries, matching the execution-heavy state read.');
+        }
+        if (leadHook) {
+          corrDigest.push('Most common hook type in the retained slice is ' + leadHook.key + ' at ' + percentLabel(leadHook.count, hookTotal) + '.');
         }
         if (densestSession) {
           var denseRate = eventsPerHour(densestSession.event_count, densestSession.first_seen, densestSession.last_seen);
@@ -1150,6 +1265,16 @@ function loadAll() {
           cprows.push([esc(cp.project), numberFmt(cp.total), numberFmt(cp.compactions), percentLabel(cp.compactions, cp.total), numberFmt(cp.total_messages)]);
         }
         o += makeTable(['project', 'logs', 'compactions', 'compaction rate', 'messages'], cprows);
+      }
+
+      if (hookEntries.length > 0) {
+        o += '<div class="note"><span class="pill">hooks</span>Hook event mix used in the cross-signal rollup.</div>';
+        var hprows = [];
+        for (var i = 0; i < Math.min(hookEntries.length, 10); i++) {
+          var hookEntry = hookEntries[i];
+          hprows.push([esc(hookEntry.key), numberFmt(hookEntry.count), percentLabel(hookEntry.count, hookTotal)]);
+        }
+        o += makeTable(['hook type', 'count', 'share'], hprows);
       }
 
       if (familyRows.length > 0) {
@@ -1223,7 +1348,7 @@ function loadAll() {
     if (sum.device) headerBits.push('device ' + sum.device);
     headerBits.push('db updated ' + timeLabel(sum.db_mtime));
     headerBits.push('latest session activity ' + timeLabel(sum.latest_session_mtime));
-    headerBits.push('db: ~/.harnesster/harnesster.db');
+    headerBits.push('db: ~/.neo/neo.db');
     document.getElementById('gen').textContent = headerBits.join(' — ');
   });
 }

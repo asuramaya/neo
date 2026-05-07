@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neo-local"
+version = "0.1.0"
+description = "Inspect Claude Code local transcripts, reminders, and hook-visible lifecycle data."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "asuramaya" }]
+keywords = ["claude-code", "dashboard", "sqlite", "telemetry", "transcripts"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Topic :: Software Development :: Debuggers",
+  "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/asuramaya/neo"
+Repository = "https://github.com/asuramaya/neo"
+
+[project.scripts]
+neo = "neo.app:main"
+neo-mcp = "neo.mcp_server:main"
+harnesster = "neo.harnesster:main"
+neo-states = "neo.states:main"
+neo-tokens = "neo.tokens:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+license-files = ["LICENSE"]
+
+[tool.setuptools.package-data]
+neo = ["dashboard.html"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

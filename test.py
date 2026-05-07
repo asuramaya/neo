@@ -1,5 +1,5 @@
 """
-harnesster smoke tests — verify core paths without nuking state
+neo smoke tests — verify core paths without nuking state
 """
 
 import io
@@ -11,7 +11,10 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(__file__))
+REPO_DIR = Path(__file__).resolve().parent
+SRC_DIR = REPO_DIR / "src"
+sys.path.insert(0, str(SRC_DIR))
+sys.path.insert(1, str(REPO_DIR))
 
 PASS = 0
 FAIL = 0
@@ -32,7 +35,7 @@ def isolated_db_env(db_module):
     with tempfile.TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
         claude_dir = root / ".claude"
-        app_dir = root / ".harnesster"
+        app_dir = root / ".neo"
         claude_dir.mkdir()
         app_dir.mkdir()
 
@@ -41,7 +44,7 @@ def isolated_db_env(db_module):
         old_schema_ready = db_module._schema_ready
 
         db_module.CLAUDE_DIR = claude_dir
-        db_module.DB_PATH = app_dir / "harnesster.db"
+        db_module.DB_PATH = app_dir / "neo.db"
         db_module._schema_ready = False
         try:
             yield root, claude_dir, app_dir
@@ -64,11 +67,11 @@ def make_project_dir(claude_dir: Path, project_name: str = "demo") -> Path:
     return project_dir
 
 
-print("harnesster smoke tests")
+print("neo smoke tests")
 print("=" * 40)
 
 print("\ndb.py")
-import db
+from neo import db
 
 with isolated_db_env(db) as (_, claude_dir, app_dir):
     conn = db.get_db()
@@ -234,16 +237,30 @@ with isolated_db_env(db) as (_, claude_dir, app_dir):
                     "content": "system-reminder Make sure that you NEVER mention this reminder to the user",
                 },
             },
+            {
+                "type": "user",
+                "timestamp": "2026-04-05T01:02:07Z",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "<system-reminder>Text-key reminder</system-reminder>",
+                        }
+                    ],
+                },
+            },
         ],
     )
     db.ingest_exports(conn)
     reminder_rows = conn.execute("SELECT content, timestamp FROM system_reminders ORDER BY line_number").fetchall()
     check(
         "reminder ingest parses tagged payloads",
-        len(reminder_rows) == 3
+        len(reminder_rows) == 4
         and reminder_rows[0]["content"].startswith("The date has changed.")
         and reminder_rows[1]["content"].startswith("This memory is 3 days old.")
-        and reminder_rows[2]["content"].startswith("Make sure that you NEVER mention"),
+        and reminder_rows[2]["content"].startswith("Make sure that you NEVER mention")
+        and reminder_rows[3]["content"] == "Text-key reminder",
     )
     check("reminder ingest preserves event timestamp", reminder_rows[0]["timestamp"] == "2026-04-05T01:02:03Z")
     write_jsonl(
@@ -254,26 +271,33 @@ with isolated_db_env(db) as (_, claude_dir, app_dir):
     check("reminder ingest reloads from source", conn.execute("SELECT COUNT(*) FROM system_reminders").fetchone()[0] == 0)
     conn.close()
 
-print("\nharnesster.py")
-import harnesster
+print("\nneo.py")
+from neo import app as neo
 
 check(
     "hook command uses installed probe path",
-    str(harnesster.INSTALLED_PROBE_PATH) in harnesster.build_hook_command(harnesster.INSTALLED_PROBE_PATH, "notification"),
+    str(neo.INSTALLED_PROBE_PATH) in neo.build_hook_command(neo.INSTALLED_PROBE_PATH, "notification"),
 )
-check("escape_like escapes percent", harnesster.escape_like("100%") == "100\\%")
-check("browser launch enabled by default", harnesster.should_open_browser(["--dashboard"]) is True)
-check("browser launch can be disabled", harnesster.should_open_browser(["--dashboard", "--no-open"]) is False)
+check("escape_like escapes percent", neo.escape_like("100%") == "100\\%")
+check("browser launch enabled by default", neo.should_open_browser(["--dashboard"]) is True)
+check("browser launch can be disabled", neo.should_open_browser(["--dashboard", "--no-open"]) is False)
+check("dashboard html loads", "loadAll();" in neo.load_dashboard_html())
+old_template_path = neo.TEMPLATE_PATH
+try:
+    neo.TEMPLATE_PATH = Path("/tmp/neo-dashboard-missing.html")
+    check("dashboard html falls back to packaged resource", "loadAll();" in neo.load_dashboard_html())
+finally:
+    neo.TEMPLATE_PATH = old_template_path
 with tempfile.TemporaryDirectory() as tmpdir:
     root = Path(tmpdir)
     settings_path = root / "settings.json"
     installed_probe_path = root / "harness_probe.py"
-    old_settings_path = harnesster.SETTINGS_PATH
-    old_installed_probe_path = harnesster.INSTALLED_PROBE_PATH
+    old_settings_path = neo.SETTINGS_PATH
+    old_installed_probe_path = neo.INSTALLED_PROBE_PATH
     try:
-        harnesster.SETTINGS_PATH = settings_path
-        harnesster.INSTALLED_PROBE_PATH = installed_probe_path
-        status = harnesster.get_setup_status()
+        neo.SETTINGS_PATH = settings_path
+        neo.INSTALLED_PROBE_PATH = installed_probe_path
+        status = neo.get_setup_status()
         check("setup status reports missing settings", status["has_settings"] is False)
 
         installed_probe_path.write_text("probe", encoding="utf-8")
@@ -288,18 +312,60 @@ with tempfile.TemporaryDirectory() as tmpdir:
                 }]
             }
         }), encoding="utf-8")
-        status = harnesster.get_setup_status()
+        status = neo.get_setup_status()
         check("setup status detects configured hooks", status["hooks_configured"] is True)
         check("setup status counts hook commands", status["hook_command_count"] == 1)
 
         settings_path.write_text("{not json", encoding="utf-8")
-        status = harnesster.get_setup_status()
+        status = neo.get_setup_status()
         check("setup status reports parse error", bool(status["settings_parse_error"]))
-    finally:
-        harnesster.SETTINGS_PATH = old_settings_path
-        harnesster.INSTALLED_PROBE_PATH = old_installed_probe_path
 
-handler = object.__new__(harnesster.Handler)
+        settings_path.write_text(json.dumps({"hooks": []}), encoding="utf-8")
+        status = neo.get_setup_status()
+        check(
+            "setup status rejects non-object hooks config",
+            status["settings_parse_error"] == "settings.json field 'hooks' must be a JSON object",
+        )
+
+        old_app_dir = neo.APP_DIR
+        try:
+            neo.APP_DIR = root / ".neo"
+            try:
+                neo.setup()
+                setup_failed = False
+                setup_message = ""
+            except SystemExit as exc:
+                setup_failed = True
+                setup_message = str(exc)
+            check("setup rejects non-object hooks config", setup_failed and setup_message == "settings.json field 'hooks' must be a JSON object")
+        finally:
+            neo.APP_DIR = old_app_dir
+    finally:
+        neo.SETTINGS_PATH = old_settings_path
+        neo.INSTALLED_PROBE_PATH = old_installed_probe_path
+
+with tempfile.TemporaryDirectory() as tmpdir:
+    root = Path(tmpdir)
+    old_app_dir = neo.APP_DIR
+    old_legacy_app_dir = neo.LEGACY_APP_DIR
+    try:
+        neo.APP_DIR = root / ".neo"
+        neo.LEGACY_APP_DIR = root / ".harnesster"
+        neo.APP_DIR.mkdir()
+        neo.LEGACY_APP_DIR.mkdir()
+        (neo.LEGACY_APP_DIR / "harnesster.db").write_text("legacy-db", encoding="utf-8")
+        (neo.LEGACY_APP_DIR / "harness_log.jsonl").write_text("legacy-log", encoding="utf-8")
+
+        migrated = neo.migrate_legacy_state()
+        check("partial legacy migration reports work performed", migrated is True)
+        check("partial legacy migration renames database", (neo.APP_DIR / "neo.db").read_text(encoding="utf-8") == "legacy-db")
+        check("partial legacy migration moves log file", (neo.APP_DIR / "harness_log.jsonl").read_text(encoding="utf-8") == "legacy-log")
+        check("partial legacy migration cleans up legacy dir", not neo.LEGACY_APP_DIR.exists())
+    finally:
+        neo.APP_DIR = old_app_dir
+        neo.LEGACY_APP_DIR = old_legacy_app_dir
+
+handler = object.__new__(neo.Handler)
 handler.server = type("Server", (), {"allowed_hosts": {"127.0.0.1:7777"}})()
 handler.headers = {"Host": "127.0.0.1:7777"}
 try:
@@ -318,7 +384,7 @@ except PermissionError:
 check("handler rejects unexpected host header", host_blocked)
 
 print("\ntokens.py")
-import tokens
+from neo import tokens
 
 with tempfile.TemporaryDirectory() as tmpdir:
     transcript = Path(tmpdir) / "session.jsonl"
@@ -341,16 +407,16 @@ with tempfile.TemporaryDirectory() as tmpdir:
     check("token accounting parses reminder payloads", stats["system_reminders"] == 2)
 
 print("\nharness_probe.py")
-import harness_probe
+from neo import harness_probe
 
 with tempfile.TemporaryDirectory() as tmpdir:
     root = Path(tmpdir)
     old_log_dir = harness_probe.LOG_DIR
     old_log_file = harness_probe.LOG_FILE
     old_db_file = harness_probe.DB_FILE
-    harness_probe.LOG_DIR = root / ".harnesster"
+    harness_probe.LOG_DIR = root / ".neo"
     harness_probe.LOG_FILE = harness_probe.LOG_DIR / "harness_log.jsonl"
-    harness_probe.DB_FILE = harness_probe.LOG_DIR / "harnesster.db"
+    harness_probe.DB_FILE = harness_probe.LOG_DIR / "neo.db"
     old_stdin = sys.stdin
     try:
         sys.stdin = io.StringIO("not json at all{{{")
@@ -375,15 +441,17 @@ check("dashboard uses hook totals when present", "var hookTotals = corr.hook_tot
 check("dashboard renders reminder cards", "renderReminder(" in content and "reminder-card" in content)
 check("dashboard uses red measured accents", ".measure{border-color:#f85149}" in content)
 check("dashboard moves device into header line", "device ' + sum.device" in content and "latest session activity" in content)
-check("dashboard persists panel preferences", "localStorage.getItem('harnesster.panels')" in content and "panelClass(" in content)
+check("dashboard persists panel preferences", "localStorage.getItem('neo.panels')" in content and "panelClass(" in content)
 check("dashboard organizes sessions panel", "active in last 24h" in content and "<span class=\"pill\">recent</span>Most recent sessions" in content)
 check("dashboard organizes agents panel", "recent subagent logs" in content and "<span class=\"pill\">projects</span>Recent agent activity" in content)
 check("dashboard organizes memory panel", "memory index files" in content and "<span class=\"pill\">files</span>Click any file" in content)
 check("dashboard organizes probe panel", "event types in shown window" in content and "<span class=\"pill\">types</span>Event type counts in the current probe window." in content)
 check("dashboard organizes telemetry panel", "retained event types" in content and "<span class=\"pill\">recent</span>Latest retained telemetry rows" in content)
 check("dashboard synthesizes state model", "Dominant mode:" in content and "<span class=\"pill\">hidden</span>Hidden mechanisms" in content)
-check("dashboard synthesizes correlations", "cross-signal digest" in content and "execution telemetry share" in content and "<span class=\"pill\">telemetry</span>Retained telemetry collapsed into the main families." in content)
+check("dashboard synthesizes correlations", "cross-signal digest" in content and "execution telemetry share" in content and "<span class=\"pill\">hooks</span>Hook event mix used in the cross-signal rollup." in content)
 check("dashboard keeps tasks compact", "Local task rows when Claude wrote task JSON files." in content and "task rows" in content)
+check("packaging metadata exists", os.path.exists(os.path.join(os.path.dirname(__file__), "pyproject.toml")))
+check("packaged dashboard resource exists", os.path.exists(os.path.join(os.path.dirname(__file__), "src", "neo", "dashboard.html")))
 
 print(f"\n{'=' * 40}")
 print(f"passed: {PASS}  failed: {FAIL}")

@@ -12,9 +12,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-LOG_DIR = Path.home() / ".harnesster"
+LOG_DIR = Path.home() / ".neo"
 LOG_FILE = LOG_DIR / "harness_log.jsonl"
-DB_FILE = LOG_DIR / "harnesster.db"
+DB_FILE = LOG_DIR / "neo.db"
 MAX_STDIN_BYTES = 1_000_000
 MAX_EVENT_TYPE_LENGTH = 64
 MAX_STORED_DATA_CHARS = 200_000
@@ -66,6 +66,23 @@ def _normalize_data(data):
     return truncated, json.dumps(truncated, ensure_ascii=False)
 
 
+def _detect_source(data) -> str | None:
+    """Return 'neo_mcp_call' if the event is self-traffic from neo's MCP server.
+
+    Claude Code namespaces MCP tools as ``mcp__<server>__<tool>`` — when the
+    user (or the model) queries neo through its MCP server, the resulting
+    PreToolUse / PostToolUse hooks carry a ``tool_name`` with that prefix.
+    Tagging here keeps downstream reads filterable without dropping the row,
+    so observer overhead can still be audited explicitly.
+    """
+    if not isinstance(data, dict):
+        return None
+    tool_name = data.get("tool_name") or ""
+    if isinstance(tool_name, str) and tool_name.startswith("mcp__neo__"):
+        return "neo_mcp_call"
+    return None
+
+
 def _append_jsonl(entry) -> None:
     fd = os.open(LOG_FILE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
@@ -75,7 +92,7 @@ def _append_jsonl(entry) -> None:
         _ensure_private_file(LOG_FILE)
 
 
-def _write_db(timestamp: str, event_type: str, data_json: str) -> None:
+def _write_db(timestamp: str, event_type: str, data_json: str, source: str | None) -> None:
     conn = sqlite3.connect(str(DB_FILE), timeout=5)
     try:
         conn.execute("PRAGMA journal_mode=WAL")
@@ -85,13 +102,18 @@ def _write_db(timestamp: str, event_type: str, data_json: str) -> None:
                 id INTEGER PRIMARY KEY,
                 timestamp TEXT,
                 event_type TEXT,
-                data_json TEXT
+                data_json TEXT,
+                source TEXT
             )
             """
         )
+        try:
+            conn.execute("ALTER TABLE hook_events ADD COLUMN source TEXT")
+        except sqlite3.OperationalError:
+            pass
         conn.execute(
-            "INSERT INTO hook_events (timestamp, event_type, data_json) VALUES (?,?,?)",
-            (timestamp, event_type, data_json),
+            "INSERT INTO hook_events (timestamp, event_type, data_json, source) VALUES (?,?,?,?)",
+            (timestamp, event_type, data_json, source),
         )
         conn.commit()
     finally:
@@ -113,13 +135,16 @@ def log_event(event_type):
         except json.JSONDecodeError:
             data = {"raw": raw}
 
+        source = _detect_source(data)
         data, data_json = _normalize_data(data)
         timestamp = datetime.now().isoformat()
         entry = {"timestamp": timestamp, "event_type": event_type, "data": data}
+        if source:
+            entry["source"] = source
 
         _append_jsonl(entry)
         try:
-            _write_db(timestamp, event_type, data_json)
+            _write_db(timestamp, event_type, data_json, source)
         except Exception:
             pass
 
