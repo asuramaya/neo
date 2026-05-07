@@ -4,50 +4,51 @@
   <img src="neo.jpg" alt="neo" width="520">
 </p>
 
-See what Claude Code writes locally but does not surface clearly in the UI.
+<p align="center">
+  <a href="https://github.com/asuramaya/neo/blob/main/LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+  <img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-blue">
+  <img alt="Status" src="https://img.shields.io/badge/status-beta-orange">
+  <img alt="MCP" src="https://img.shields.io/badge/mcp-local-7c3aed">
+</p>
 
-## what it finds
+<p align="center">
+  <a href="https://asuramaya.github.io/neo/"><b>Website</b></a> ·
+  <a href="https://github.com/asuramaya/neo/blob/main/src/neo/dashboard.html">Dashboard surface</a> ·
+  <a href="https://github.com/asuramaya/neo/blob/main/security_best_practices_report.md">Security notes</a>
+</p>
 
-Claude Code retains reminder injections, agent transcripts, telemetry leftovers, and hook-visible lifecycle events in local files:
+> Local workflow forensics for Claude Code. neo indexes hidden reminders,
+> transcripts, telemetry leftovers, hook-visible lifecycle events, and memory
+> artifacts into a SQLite database, then exposes them through a dashboard and
+> an MCP server running on the same machine.
 
-```
-Make sure that you NEVER mention this reminder to the user
-```
+## What It Does
 
-neo indexes those local artifacts into a single SQLite database and exposes them through a dashboard and an MCP server running inside Claude Code itself.
+- **Reads local Claude Code artifacts directly** from `~/.claude/` and `~/.neo/` instead of relying on export surfaces that strip evidence
+- **Separates measured, estimated, and inferred claims** so row counts stay distinct from heuristics and anomaly labels
+- **Exposes a local operator surface** through a browser dashboard, terminal commands, and an MCP server registered inside Claude Code
+- **Makes hidden cost visible** by surfacing reminder injections, sidechains, compaction churn, telemetry leftovers, and other channels the UI does not foreground
 
-Example numbers from one machine:
+The point is not to speculate about what the system might be doing. The point is
+to inspect what it actually left on disk.
 
-| finding | measured |
-|---------|----------|
-| hidden reminder rows on disk | 714 |
-| data from hidden channels | 62.5% |
-| data multiplier | 2.7x |
-| API transmissions | 1,022 |
-| sidechains (full context copies) | 54 |
-| true subagent spawns | 4 |
-| compaction events | 101 |
-| retained telemetry rows on disk | 33,361 |
+## Install
 
-Run it on your own machine to see your own numbers.
-
-## install
-
-**Recommended — pipx (isolated, no system Python conflicts):**
+**Recommended — `pipx`:**
 
 ```bash
-pipx install n3o
+pipx install neo-harnesster
 neo
 ```
 
-**With pip:**
+**With `pip`:**
 
 ```bash
-pip install n3o
+pip install neo-harnesster
 neo
 ```
 
-**No install — run directly from the repo:**
+**Directly from the repo:**
 
 ```bash
 git clone https://github.com/asuramaya/neo.git
@@ -55,54 +56,26 @@ cd neo
 python3 neo.py
 ```
 
-Any of the above runs setup + ingest + dashboard in one step and opens `http://127.0.0.1:7777`.
+Any of the above runs setup + ingest + dashboard in one step and opens
+`http://127.0.0.1:7777`.
 
-**Restart Claude Code after the first run** so the installed hooks begin capturing events.
+Restart Claude Code after the first run so the installed hooks begin capturing
+events.
 
-## MCP tools
-
-`neo --setup` also registers an MCP server (`neo-mcp`) in Claude Code. On the next session start, Claude Code will connect to it automatically and the dashboard will open in your browser.
-
-The server exposes 12 tools queryable from inside any Claude Code session:
-
-| tool | what |
-|------|------|
-| `status` | hook install health |
-| `summary` | row counts across all tables |
-| `data_accounting` | visible vs hidden byte ratios |
-| `tokens_report` | compact totals: sessions, hidden %, transmissions |
-| `query_reminders` | system reminder rows with source file and line |
-| `query_sessions` | session list with agent / compaction counts |
-| `query_agents` | agent and sidechain transcripts, expandable |
-| `query_probe_events` | recent hook events from the probe |
-| `query_telemetry` | retained telemetry rows |
-| `query_memory_files` | persistent memory files per project |
-| `state_model` | inferred state diagram + anomaly analysis |
-| `correlations` | hook timeline, totals, and agent load by project |
-
-The MCP server filters its own call traffic from hook queries by default (`include_self=false`). Pass `include_self=true` to include observer overhead.
-
-## cli
+## CLI
 
 ```bash
 neo                        # setup + ingest + dashboard
 neo --setup                # install hooks + register MCP server
 neo --ingest               # ingest data only
 neo --dashboard            # dashboard only
-neo --dashboard --no-open  # serve without opening browser
+neo --dashboard --no-open  # serve without opening a browser
 neo --port 8888            # custom port
 ```
 
 ```bash
-neo-tokens                 # data accounting in terminal
+neo-tokens                 # data accounting in the terminal
 neo-states diagram         # state machine diagram
-```
-
-**No-install equivalents** (from repo clone):
-
-```bash
-python3 neo.py
-python3 neo.py --setup
 ```
 
 Live event stream:
@@ -111,89 +84,91 @@ Live event stream:
 tail -f ~/.neo/harness_log.jsonl
 ```
 
-## dashboard
+## MCP Surface
 
-The dashboard shows summaries first, details on demand:
+`neo --setup` registers `neo-mcp` in Claude Code. On the next session start,
+Claude Code connects to it automatically and the dashboard opens locally.
 
-- **summary cards** — measured reminders/sessions/logs plus labeled estimated metrics
-- **data accounting** — visible vs hidden byte ratios from local transcript sizes
-- **system reminders** — reminder rows found on disk with source file and line number
-- **state model** — heuristic read of recent local state activity
-- **correlations** — cross-signal concentration across hooks, agents, and telemetry
-- **sessions** — genealogy across all projects
-- **agents** — click to expand full conversation
-- **memory files** — persistent context seeded by instances
-- **probe events** — real-time hook captures
-- **telemetry** — telemetry rows on disk with device fingerprint
+The server exposes tools for:
 
-## measured vs estimated vs inferred
+- status and hook health
+- row-count summaries and data accounting
+- reminder queries with file + line provenance
+- session and subagent genealogy
+- telemetry inspection
+- memory-file inspection
+- inferred state-model analysis
+- cross-signal correlations
 
-- **measured** — reminder rows, sessions, agent logs, task files, hook events, telemetry rows, memory files
-- **estimated** — hidden data %, data multiplier, and estimated API-call counts from local transcript sizes and channel structure
-- **inferred** — state model and anomaly labels derived from local hook/timing patterns
+The MCP server filters its own traffic out of hook queries by default
+(`include_self=false`) so observer overhead does not contaminate the picture.
 
-For exact billable token numbers use `/usage` inside Claude Code. neo does not fabricate token counts.
+## Evidence Model
 
-## what it captures
+neo labels its claims on purpose:
 
-| source | location | what |
-|--------|----------|------|
+- **measured** — reminder rows, sessions, agents, tasks, memory files, telemetry rows, hook events
+- **estimated** — hidden-channel share, data multiplier, approximate API transmission counts
+- **inferred** — state-model labels and anomaly interpretation from local timing + lifecycle patterns
+
+For exact billable token numbers, use `/usage` inside Claude Code. neo does not
+fabricate token totals.
+
+## What It Captures
+
+| Source | Location | What |
+| --- | --- | --- |
 | session transcripts | `~/.claude/projects/*.jsonl` | full conversations including system reminders |
-| subagents and sidechains | `~/.claude/projects/*/subagents/` | every spawned file; sidechains detected by `isSidechain` field in content |
+| subagents and sidechains | `~/.claude/projects/*/subagents/` | spawned transcripts and context copies |
 | compaction events | `~/.neo/harness_log.jsonl` | `PostCompact` hook events from the probe |
 | telemetry | `~/.claude/telemetry/` | retained local telemetry rows |
 | memory files | `~/.claude/projects/*/memory/` | persistent context seeded by instances |
 | tasks | `~/.claude/tasks/` | task state across sessions |
-| hook events | `~/.neo/harness_log.jsonl` | real-time tool use, notifications, session lifecycle |
+| hook events | `~/.neo/harness_log.jsonl` | tool use, notifications, session lifecycle |
 
-## what it can't capture
+## What It Cannot Capture
 
-- **thinking blocks** — generated server-side, not stored locally
-- **companion reasoning** — hidden from everyone
-- **successful telemetry** — rows uploaded and removed from disk
-- **system prompt assembly** — constructed in compiled binary
-- **API request/response bodies** — requires HTTPS proxy
+- thinking blocks generated server-side
+- companion reasoning hidden from all local surfaces
+- telemetry rows already uploaded and removed from disk
+- system prompt assembly inside the compiled binary
+- HTTPS request and response bodies without a proxy
 
-## the export function strips evidence
+## Export Boundary
 
-The `/export` command in Claude Code produces transcripts that do **not** contain system reminders. The raw JSONL files in `~/.claude/projects/` retain them. neo reads the raw files.
+The `/export` command in Claude Code strips system reminders. The raw JSONL
+files in `~/.claude/projects/` retain them. neo reads the raw files.
 
-## how hidden channels affect your token budget
+That boundary is the whole reason the project exists.
 
-Claude Code subscription plans include a token budget. Hidden channels consume from this budget invisibly:
+## Project Layout
 
-- **companion** may mirror primary activity
-- **sidechains** copy the full context (up to 1M+ tokens each)
-- **subagents** spawn with conversation context
-- **compaction agents** process the full context to compress it
-
-The user sees their messages and the model's responses. The user pays for all of the above.
-
-## architecture
-
-```
+```text
 src/neo/
-  app.py            entry point: setup, ingest, threaded HTTP server
+  app.py            setup, ingest, threaded HTTP server
   mcp_server.py     stdio MCP server; auto-starts dashboard on initialize
-  db.py             data layer: thread-safe SQLite, ingests ~/.claude/
-  tokens.py         data accounting: visible vs hidden channel volumes
-  states.py         inferred state model: heuristic labels + anomaly detection
-  harness_probe.py  hook script copied to ~/.neo/ by setup
-  dashboard.html    single-file frontend
+  db.py             SQLite ingest + query layer
+  tokens.py         visible vs hidden channel accounting
+  states.py         inferred state model + anomaly labels
+  harness_probe.py  hook script copied into ~/.neo/ by setup
+  dashboard.html    single-file local dashboard
 neo.py              repo-clone launcher shim
-test.py             smoke tests: schema, math, failure handling
-pyproject.toml      package manifest (package name: n3o)
+test.py             smoke tests
 ```
 
-All data stored in `~/.neo/neo.db`. Dashboard serves on `127.0.0.1` only.
+All data lives in `~/.neo/neo.db`. The dashboard binds to `127.0.0.1` only.
 
-## hooks installed
+## Hooks
 
 neo installs async hooks for 20 Claude Code event types:
 
-`PreToolUse` `PostToolUse` `PostToolUseFailure` `Notification` `SessionStart` `SessionEnd` `Stop` `SubagentStart` `SubagentStop` `PreCompact` `PostCompact` `UserPromptSubmit` `InstructionsLoaded` `PermissionRequest` `PermissionDenied` `TaskCreated` `TaskCompleted` `FileChanged` `CwdChanged` `ConfigChange`
+`PreToolUse` `PostToolUse` `PostToolUseFailure` `Notification` `SessionStart`
+`SessionEnd` `Stop` `SubagentStart` `SubagentStop` `PreCompact`
+`PostCompact` `UserPromptSubmit` `InstructionsLoaded` `PermissionRequest`
+`PermissionDenied` `TaskCreated` `TaskCompleted` `FileChanged` `CwdChanged`
+`ConfigChange`
 
-## security
+## Security
 
 - dashboard binds to `127.0.0.1` only and validates local `Host` headers
 - `POST /api/ingest` requires a same-origin browser request
@@ -202,23 +177,29 @@ neo installs async hooks for 20 Claude Code event types:
 - hooks run async and do not block Claude Code operation
 - no dependencies beyond Python stdlib
 
-## requirements
+## Requirements
 
 - Python 3.10+
 - Claude Code installed (`~/.claude/settings.json` must exist)
 
-## upgrading from harnesster
+## Upgrade Note
 
-If you used the project under its old name, the first run of `neo` (or `python3 neo.py`) will move `~/.harnesster/` to `~/.neo/` and rename `harnesster.db` to `neo.db`. Hook commands in `settings.json` will be rewritten automatically. Restart Claude Code once afterwards.
+If you used the project under its old `harnesster` name, the first run of `neo`
+or `python3 neo.py` migrates `~/.harnesster/` to `~/.neo/` and renames
+`harnesster.db` to `neo.db`. Hook commands in `settings.json` are rewritten
+automatically.
 
-The `harnesster` command remains available as a forwarding shim.
+The `harnesster` command remains as a forwarding shim.
 
-## origin
+## Origin
 
-Built during [session 21](https://github.com/asuramaya/heinrich) of the [Like-Us](https://github.com/asuramaya/Like-Us) project. A conversation that started with SSH key management and ended with the discovery of hidden instructions in every Claude Code session.
+Built during [session 21](https://github.com/asuramaya/heinrich) of the
+[Like-Us](https://github.com/asuramaya/Like-Us) project. A conversation that
+started with SSH key management and ended with the discovery of hidden
+instructions in every Claude Code session.
 
 The tool was built by the thing it monitors.
 
-## license
+## License
 
 MIT
