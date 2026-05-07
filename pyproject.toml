@@ -3,7 +3,7 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "neo-local"
+name = "neo"
 version = "0.1.0"
 description = "Inspect Claude Code local transcripts, reminders, and hook-visible lifecycle data."
 readme = "README.md"
