@@ -17,17 +17,17 @@
   <a href="https://github.com/asuramaya/neo/blob/main/security_best_practices_report.md">Security notes</a>
 </p>
 
-> Local workflow forensics for Claude Code. neo indexes hidden reminders,
-> transcripts, telemetry leftovers, hook-visible lifecycle events, and memory
-> artifacts into a SQLite database, then exposes them through a dashboard and
-> an MCP server running on the same machine.
+> Local workflow forensics for Claude Code. neo indexes reminder text found on
+> disk, transcripts, retained telemetry rows, hook-visible lifecycle events,
+> and memory artifacts into a SQLite database, then exposes them through a
+> dashboard and an MCP server running on the same machine.
 
 ## What It Does
 
 - **Reads local Claude Code artifacts directly** from `~/.claude/` and `~/.neo/` instead of relying on export surfaces that strip evidence
 - **Separates measured, estimated, and inferred claims** so row counts stay distinct from heuristics and anomaly labels
 - **Exposes a local operator surface** through a browser dashboard, terminal commands, and an MCP server registered inside Claude Code
-- **Makes hidden cost visible** by surfacing reminder injections, sidechains, compaction churn, telemetry leftovers, and other channels the UI does not foreground
+- **Makes local overhead visible** by surfacing reminder injections, sidechains, compaction churn, retained telemetry rows, and other traces the UI does not foreground
 
 The point is not to speculate about what the system might be doing. The point is
 to inspect what it actually left on disk.
@@ -108,7 +108,7 @@ The MCP server filters its own traffic out of hook queries by default
 neo labels its claims on purpose:
 
 - **measured** — reminder rows, sessions, agents, tasks, memory files, telemetry rows, hook events
-- **estimated** — hidden-channel share, data multiplier, approximate API transmission counts
+- **estimated** — hidden-context share, data multiplier, approximate API transmission counts
 - **inferred** — state-model labels and anomaly interpretation from local timing + lifecycle patterns
 
 For exact billable token numbers, use `/usage` inside Claude Code. neo does not
@@ -121,16 +121,16 @@ fabricate token totals.
 | session transcripts | `~/.claude/projects/*.jsonl` | full conversations including system reminders |
 | subagents and sidechains | `~/.claude/projects/*/subagents/` | spawned transcripts and context copies |
 | compaction events | `~/.neo/harness_log.jsonl` | `PostCompact` hook events from the probe |
-| telemetry | `~/.claude/telemetry/` | retained local telemetry rows |
+| telemetry | `~/.claude/telemetry/` | telemetry rows currently retained on disk |
 | memory files | `~/.claude/projects/*/memory/` | persistent context seeded by instances |
 | tasks | `~/.claude/tasks/` | task state across sessions |
 | hook events | `~/.neo/harness_log.jsonl` | tool use, notifications, session lifecycle |
 
 ## What It Cannot Capture
 
-- thinking blocks generated server-side
-- companion reasoning hidden from all local surfaces
-- telemetry rows already uploaded and removed from disk
+- server-side reasoning or model internals that never land on disk
+- the contents of any secondary channel that is not persisted locally
+- whether absent telemetry rows were uploaded, deleted, or never written locally
 - system prompt assembly inside the compiled binary
 - HTTPS request and response bodies without a proxy
 

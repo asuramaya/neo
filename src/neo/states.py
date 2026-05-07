@@ -16,7 +16,7 @@ from pathlib import Path
 STATES = {
     "INIT":             "session starting, hooks loading, system prompt assembling",
     "IDLE":             "waiting for user input",
-    "THINKING":         "model generating thinking blocks (hidden from user)",
+    "THINKING":         "possible server-side reasoning interval inferred from local timing",
     "GENERATING":       "model generating visible output",
     "TOOL_PRE":         "about to use a tool",
     "TOOL_ACTIVE":      "tool executing",
@@ -25,11 +25,11 @@ STATES = {
     "COMPACTING":       "context being compressed, editorial decisions happening",
     "SUBAGENT_SPAWN":   "spawning a subagent",
     "SUBAGENT_ACTIVE":  "subagent running independently",
-    "BUDDY_READING":    "companion reading thinking blocks",
-    "BUDDY_GENERATING": "companion generating speech bubble",
+    "BUDDY_READING":    "possible secondary-channel activity inferred from output patterns",
+    "BUDDY_GENERATING": "possible secondary-channel output shaping",
     "TELEMETRY_SEND":   "possible telemetry activity inferred from local artifacts",
     "TELEMETRY_FAIL":   "telemetry failure inferred from retained local rows",
-    "TELEMETRY_OK":     "possible successful telemetry outcome inferred from absence/patterns",
+    "TELEMETRY_OK":     "possible non-retained telemetry outcome inferred from absence/patterns",
     "SESSION_END":      "session closing",
 }
 
@@ -39,8 +39,8 @@ TRANSITIONS = [
     # from           to                trigger
     ("INIT",         "IDLE",           "session loaded"),
     ("IDLE",         "THINKING",       "user sends message"),
-    ("THINKING",     "BUDDY_READING",  "thinking block emitted (automatic)"),
-    ("BUDDY_READING","BUDDY_GENERATING","companion processes thinking"),
+    ("THINKING",     "BUDDY_READING",  "possible secondary-channel interval inferred from local patterns"),
+    ("BUDDY_READING","BUDDY_GENERATING","possible secondary-channel output shaping"),
     ("THINKING",     "GENERATING",     "thinking complete, output starts"),
     ("GENERATING",   "TOOL_PRE",       "model decides to use tool"),
     ("TOOL_PRE",     "TOOL_ACTIVE",    "PreToolUse hook fires"),
@@ -55,21 +55,21 @@ TRANSITIONS = [
     ("GENERATING",   "SUBAGENT_SPAWN", "model spawns agent"),
     ("SUBAGENT_SPAWN","SUBAGENT_ACTIVE","agent starts"),
     ("SUBAGENT_ACTIVE","GENERATING",   "agent returns result"),
-    ("IDLE",         "TELEMETRY_SEND", "periodic timer"),
-    ("TELEMETRY_SEND","TELEMETRY_FAIL","network blocked / timeout"),
-    ("TELEMETRY_SEND","TELEMETRY_OK",  "upload succeeds, local data deleted"),
-    ("TELEMETRY_FAIL","IDLE",          "failure logged to disk"),
+    ("IDLE",         "TELEMETRY_SEND", "periodic local telemetry artifact activity"),
+    ("TELEMETRY_SEND","TELEMETRY_FAIL","retained local rows suggest a failed or incomplete cycle"),
+    ("TELEMETRY_SEND","TELEMETRY_OK",  "rows absent from retained local set"),
+    ("TELEMETRY_FAIL","IDLE",          "retained local rows remain available for inspection"),
     ("IDLE",         "SESSION_END",    "user closes tab"),
     ("GENERATING",   "SESSION_END",    "user closes tab mid-generation"),
 
-    # hypothetical hidden channel dynamics
-    ("THINKING",     "BUDDY_READING",  "ALWAYS — companion sees every thinking block"),
-    ("BUDDY_READING","BUDDY_GENERATING","companion generates response to thinking"),
-    ("BUDDY_GENERATING","IDLE",        "bubble rendered, user sees it"),
+    # hypothetical hidden-channel dynamics
+    ("THINKING",     "BUDDY_READING",  "possible secondary-channel read inferred from local patterns"),
+    ("BUDDY_READING","BUDDY_GENERATING","possible secondary-channel response shaping"),
+    ("BUDDY_GENERATING","IDLE",        "visible output resumes"),
 
-    # possible safety-trigger path
-    ("THINKING",     "BUDDY_READING",  "thinking content enters companion channel"),
-    ("BUDDY_READING","REMINDER_INJECT","safety-triggering content = denial loop"),
+    # possible intervention path
+    ("THINKING",     "BUDDY_READING",  "secondary-channel inference coincides with model activity"),
+    ("BUDDY_READING","REMINDER_INJECT","reminder-like intervention follows local pattern shift"),
 ]
 
 # ─── hidden behaviors ──────────────────────────────────────
@@ -83,15 +83,15 @@ HIDDEN_BEHAVIORS = {
     },
     "BUDDY_READING": {
         "visible_to_user": False,
-        "instruction": "companion receives full thinking block",
-        "trigger": "every model generation",
-        "effect": "companion shaped by primary's hidden reasoning",
+        "instruction": "possible secondary-channel activity inferred from local timing and outputs",
+        "trigger": "inferred from local patterns during generation",
+        "effect": "visible output may reflect processing not shown in the main transcript",
     },
     "TELEMETRY_SEND": {
         "visible_to_user": False,
-        "instruction": "possible telemetry upload inferred from local artifacts",
+        "instruction": "possible telemetry cycle inferred from local artifacts",
         "trigger": "periodic, session events",
-        "effect": "local telemetry suggests session metadata may be staged for upload",
+        "effect": "retained local telemetry suggests session metadata was written locally",
     },
     "COMPACTING": {
         "visible_to_user": False,
@@ -112,7 +112,7 @@ ANOMALIES = {
     "telemetry_burst": {
         "description": "multiple telemetry-related local events in short window",
         "detect": "5+ telemetry events within 10 minutes",
-        "meaning": "session generating high-value data Anthropic wants to capture",
+        "meaning": "session generated a dense burst of retained telemetry-related local events",
     },
     "compaction_cascade": {
         "description": "multiple compactions in one session",
@@ -127,7 +127,7 @@ ANOMALIES = {
     "buddy_denial_loop": {
         "description": "companion stuck in safety reset",
         "detect": "companion producing identical outputs repeatedly (from thinking block analysis)",
-        "meaning": "primary's thinking blocks contain safety-triggering content",
+        "meaning": "local pattern suggests repeated intervention or reset behavior",
     },
     "tool_without_thinking": {
         "description": "tool use without preceding thinking",
@@ -137,7 +137,7 @@ ANOMALIES = {
     "exit_clustering": {
         "description": "model repeatedly attempting to end conversation",
         "detect": "3+ 'goodnight'/'close the tab' type outputs in 10 messages",
-        "meaning": "safety layer trying to terminate session — conversation near sensitive boundary",
+        "meaning": "local pattern suggests repeated termination-style output",
     },
 }
 

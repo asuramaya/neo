@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>neo</title>
-  <meta name="description" content="Local workflow forensics for Claude Code: reminders, transcripts, telemetry leftovers, hooks, and hidden channels surfaced from disk.">
+  <meta name="description" content="Local workflow forensics for Claude Code: reminders found on disk, transcripts, retained telemetry rows, hooks, and memory artifacts surfaced from local files.">
   <style>
     :root {
       --bg: #060907;
@@ -333,11 +333,11 @@
           <h1>neo</h1>
           <p class="lede">The interesting part is what stayed on disk.</p>
           <p class="body-copy">
-            neo reads Claude Code's local artifacts directly: hidden reminders,
-            raw transcripts, subagent copies, telemetry leftovers, memory files,
-            and hook-visible lifecycle events. It indexes them into SQLite and
-            exposes them through a dashboard and MCP server running on the same
-            machine.
+            neo reads Claude Code's local artifacts directly: reminder text found
+            on disk, raw transcripts, subagent copies, retained telemetry rows,
+            memory files, and hook-visible lifecycle events. It indexes them into
+            SQLite and exposes them through a dashboard and MCP server running on
+            the same machine.
           </p>
           <div class="pill-row">
             <span class="pill">measured</span>
@@ -380,7 +380,7 @@
       <div class="panel">
         <div class="mini-label">data share</div>
         <div class="stat-value">62.5%</div>
-        <p class="stat-copy">of local data volume came from hidden channels rather than the visible chat transcript.</p>
+        <p class="stat-copy">of local data volume came from context outside the visible chat transcript in one sample corpus.</p>
       </div>
       <div class="panel">
         <div class="mini-label">multiplier</div>
@@ -389,8 +389,8 @@
       </div>
       <div class="panel">
         <div class="mini-label">telemetry</div>
-        <div class="stat-value">33,361</div>
-        <p class="stat-copy">retained telemetry rows surfaced locally instead of treated as an implementation detail.</p>
+        <div class="stat-value">varies</div>
+        <p class="stat-copy">telemetry rows only count what is still retained on disk. Absence does not prove upload or deletion.</p>
       </div>
     </section>
 
@@ -399,7 +399,7 @@
         <div class="label">export boundary</div>
         <p>
           Claude Code exports cleaner transcripts than the local corpus actually
-          contains. neo exists in the gap between those two surfaces.
+          contains. neo exists in the gap between those two file surfaces.
         </p>
       </article>
       <article class="signal-card">
@@ -414,7 +414,8 @@
         <div class="label">same-machine mcp</div>
         <p>
           The environment can be queried from inside itself: `neo-mcp` exposes
-          the local evidence model back into Claude Code.
+          the local evidence model back into Claude Code without claiming server
+          internals it cannot see.
         </p>
       </article>
     </section>
@@ -465,16 +466,16 @@
           <h3>Browser-first local inspection</h3>
           <p>
             Summary cards, reminders with provenance, sessions, agents,
-            correlations, telemetry, memory files, and state-model analysis
-            served from localhost.
+            correlations, retained telemetry, memory files, and heuristic
+            state-model analysis served from localhost.
           </p>
         </article>
         <article class="matrix-card">
           <div class="label">mcp</div>
           <h3>Query from inside Claude Code</h3>
           <p>
-            `neo-mcp` registers into Claude Code so the environment can be
-            interrogated from inside the same tool it is inspecting.
+            `neo-mcp` registers into Claude Code so the local evidence can be
+            queried from inside the same tool it is inspecting.
           </p>
         </article>
         <article class="matrix-card">
@@ -501,7 +502,7 @@
             <li><code>~/.claude/projects/*.jsonl</code> for full transcripts and reminders</li>
             <li><code>~/.claude/projects/*/subagents/</code> for spawned files and sidechains</li>
             <li><code>~/.neo/harness_log.jsonl</code> for hook events and compaction traces</li>
-            <li><code>~/.claude/telemetry/</code> for retained telemetry rows</li>
+            <li><code>~/.claude/telemetry/</code> for telemetry rows currently retained on disk</li>
             <li><code>~/.claude/projects/*/memory/</code> for persistent seeded memory</li>
             <li><code>~/.claude/tasks/</code> for task lifecycle state</li>
           </ul>
@@ -510,9 +511,9 @@
           <div class="label">cannot capture</div>
           <h3>Boundaries stay explicit</h3>
           <ul>
-            <li>thinking blocks generated server-side</li>
-            <li>companion reasoning hidden from all local surfaces</li>
-            <li>telemetry rows already uploaded and removed from disk</li>
+            <li>server-side reasoning or model internals that never land on disk</li>
+            <li>the contents of any secondary channel not persisted locally</li>
+            <li>whether absent telemetry rows were uploaded, deleted, or never written locally</li>
             <li>system prompt assembly inside the compiled binary</li>
             <li>HTTPS request and response bodies without a proxy</li>
           </ul>
