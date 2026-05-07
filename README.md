@@ -36,14 +36,14 @@ Run it on your own machine to see your own numbers.
 **Recommended — pipx (isolated, no system Python conflicts):**
 
 ```bash
-pipx install git+https://github.com/asuramaya/neo.git
+pipx install n3o
 neo
 ```
 
 **With pip:**
 
 ```bash
-pip install git+https://github.com/asuramaya/neo.git
+pip install n3o
 neo
 ```
 
@@ -182,7 +182,7 @@ src/neo/
   dashboard.html    single-file frontend
 neo.py              repo-clone launcher shim
 test.py             smoke tests: schema, math, failure handling
-pyproject.toml      package manifest (package name: neo-local)
+pyproject.toml      package manifest (package name: n3o)
 ```
 
 All data stored in `~/.neo/neo.db`. Dashboard serves on `127.0.0.1` only.
