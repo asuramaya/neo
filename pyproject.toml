@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "neo-harnesster"
-version = "0.1.0"
+version = "0.2.0"
 description = "Inspect Claude Code local transcripts, reminders, and hook-visible lifecycle data."
 readme = "README.md"
 requires-python = ">=3.10"

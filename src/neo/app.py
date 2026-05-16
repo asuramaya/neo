@@ -739,13 +739,13 @@ def serve(port: int = DEFAULT_PORT, launch_browser: bool = True) -> None:
         f"localhost:{port}",
     }
     url = "http://127.0.0.1:" + str(port)
-    print("neo: " + url)
+    print("neo: " + url, file=sys.stderr)
     if launch_browser:
         open_browser(url)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nstopped.")
+        print("\nstopped.", file=sys.stderr)
     finally:
         server.server_close()
 

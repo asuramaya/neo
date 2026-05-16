@@ -330,6 +330,19 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             UNIQUE(source_file, line_number)
         );
 
+        CREATE TABLE IF NOT EXISTS ingest_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS ingest_file_state (
+            source TEXT,
+            path TEXT,
+            mtime TEXT,
+            size_bytes INTEGER DEFAULT 0,
+            PRIMARY KEY (source, path)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_tel_session ON telemetry(session_id);
         CREATE INDEX IF NOT EXISTS idx_tel_time ON telemetry(time);
         CREATE INDEX IF NOT EXISTS idx_agents_project ON agents(project);
@@ -344,7 +357,63 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE hook_events ADD COLUMN source TEXT")
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE tasks ADD COLUMN source_path TEXT")
+    except sqlite3.OperationalError:
+        pass
     _commit_and_harden(conn)
+
+
+def _get_meta(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:
+    row = conn.execute("SELECT value FROM ingest_meta WHERE key=?", (key,)).fetchone()
+    return row[0] if row else default
+
+
+def _get_meta_int(conn: sqlite3.Connection, key: str, default: int = 0) -> int:
+    raw = _get_meta(conn, key)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _set_meta(conn: sqlite3.Connection, key: str, value) -> None:
+    conn.execute(
+        "INSERT INTO ingest_meta (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, str(value)),
+    )
+
+
+def _get_file_state(conn: sqlite3.Connection, source: str, path: str) -> dict | None:
+    row = conn.execute(
+        "SELECT mtime, size_bytes FROM ingest_file_state WHERE source=? AND path=?",
+        (source, path),
+    ).fetchone()
+    if not row:
+        return None
+    return {"mtime": row[0], "size_bytes": row[1]}
+
+
+def _set_file_state(conn: sqlite3.Connection, source: str, path: str, mtime: str, size_bytes: int = 0) -> None:
+    conn.execute(
+        "INSERT INTO ingest_file_state (source, path, mtime, size_bytes) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(source, path) DO UPDATE SET mtime=excluded.mtime, size_bytes=excluded.size_bytes",
+        (source, path, mtime, size_bytes),
+    )
+
+
+def _delete_file_state(conn: sqlite3.Connection, source: str, path: str) -> None:
+    conn.execute("DELETE FROM ingest_file_state WHERE source=? AND path=?", (source, path))
+
+
+def _path_mtime_iso(path: Path) -> str | None:
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime).isoformat()
+    except OSError:
+        return None
 
 
 def _project_name(path: Path) -> str:
@@ -370,6 +439,13 @@ def ingest_telemetry(conn: sqlite3.Connection) -> int:
     for path in sorted(tel_dir.glob("*.json"), key=lambda p: p.name):
         if not _is_safe_regular_file(path):
             continue
+        mtime = _path_mtime_iso(path)
+        if mtime is None:
+            continue
+        prev = _get_file_state(conn, "telemetry", path.name)
+        if prev is not None and prev["mtime"] == mtime:
+            continue
+
         try:
             with open(path, encoding="utf-8", errors="ignore") as fh:
                 for raw_line in fh:
@@ -404,7 +480,9 @@ def ingest_telemetry(conn: sqlite3.Connection) -> int:
                     )
                     count += _row_delta(cursor)
         except OSError:
-            pass
+            continue
+
+        _set_file_state(conn, "telemetry", path.name, mtime, 0)
 
     _commit_and_harden(conn)
     return count
@@ -565,8 +643,9 @@ def ingest_sessions(conn: sqlite3.Connection) -> int:
                     path for path in _iter_safe_entries(sa_dir)
                     if _is_safe_regular_file(path) and path.suffix == ".jsonl"
                 ]
-            compacts = [path for path in agent_files if _is_compaction_file(path)]
-            regulars = [path for path in agent_files if not _is_compaction_file(path)]
+            compaction_flags = {p: _is_compaction_file(p) for p in agent_files}
+            compact_count = sum(1 for v in compaction_flags.values() if v)
+            regular_count = len(agent_files) - compact_count
 
             try:
                 session_mtime = datetime.fromtimestamp(session.stat().st_mtime).isoformat()
@@ -578,8 +657,8 @@ def ingest_sessions(conn: sqlite3.Connection) -> int:
                 project_name,
                 session_id,
                 session_mtime,
-                len(regulars),
-                len(compacts),
+                regular_count,
+                compact_count,
             )
 
             keep_agent_file_names: set[str] = set()
@@ -591,7 +670,19 @@ def ingest_sessions(conn: sqlite3.Connection) -> int:
                 except OSError:
                     continue
 
-                is_compact = 1 if _is_compaction_file(transcript) else 0
+                existing = conn.execute(
+                    "SELECT id, mtime, size_bytes FROM agents "
+                    "WHERE project=? AND session_id=? AND file_name=?",
+                    (project_name, session_id, transcript.name),
+                ).fetchone()
+                if (
+                    existing is not None
+                    and existing["mtime"] == mtime
+                    and existing["size_bytes"] == size_bytes
+                ):
+                    continue
+
+                is_compact = 1 if compaction_flags[transcript] else 0
                 agent_id = _upsert_agent(
                     conn,
                     project_name,
@@ -628,49 +719,70 @@ def ingest_sessions(conn: sqlite3.Connection) -> int:
 
 def ingest_hooks(conn: sqlite3.Connection) -> int:
     log_file = _hook_log_path()
-    conn.execute("DELETE FROM hook_events")
-
     if not log_file.exists() or not _is_safe_regular_file(log_file):
+        # Log file gone — drop the mirror so it stays in sync with disk.
+        conn.execute("DELETE FROM hook_events")
+        _set_meta(conn, "hook_log_offset", 0)
         _commit_and_harden(conn)
         return 0
 
+    try:
+        current_size = log_file.stat().st_size
+    except OSError:
+        return 0
+
+    last_offset = _get_meta_int(conn, "hook_log_offset", -1)
+    if last_offset < 0 or current_size < last_offset:
+        # First incremental ingest, or log was rotated/truncated — rebuild.
+        conn.execute("DELETE FROM hook_events")
+        last_offset = 0
+
+    if current_size == last_offset:
+        return 0
+
     count = 0
+    new_offset = last_offset
     try:
         with open(log_file, encoding="utf-8", errors="ignore") as fh:
+            fh.seek(last_offset)
             for raw_line in fh:
                 line = raw_line.strip()
-                if not line:
-                    continue
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                conn.execute(
-                    "INSERT INTO hook_events (timestamp, event_type, data_json, source) VALUES (?, ?, ?, ?)",
-                    (
-                        event.get("timestamp", ""),
-                        event.get("event_type", ""),
-                        json.dumps(event.get("data", {})),
-                        event.get("source"),
-                    ),
-                )
-                count += 1
+                if line:
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        event = None
+                    if event is not None:
+                        conn.execute(
+                            "INSERT INTO hook_events (timestamp, event_type, data_json, source) VALUES (?, ?, ?, ?)",
+                            (
+                                event.get("timestamp", ""),
+                                event.get("event_type", ""),
+                                json.dumps(event.get("data", {})),
+                                event.get("source"),
+                            ),
+                        )
+                        count += 1
+            new_offset = fh.tell()
     except OSError:
         pass
 
+    _set_meta(conn, "hook_log_offset", new_offset)
     _commit_and_harden(conn)
     return count
 
 
 def ingest_tasks(conn: sqlite3.Connection) -> int:
     tasks_dir = CLAUDE_DIR / "tasks"
-    conn.execute("DELETE FROM tasks")
-
     if not tasks_dir.exists():
+        conn.execute("DELETE FROM tasks")
+        conn.execute("DELETE FROM ingest_file_state WHERE source='tasks'")
         _commit_and_harden(conn)
         return 0
 
     count = 0
+    seen_paths: set[str] = set()
+
     for session_dir in _iter_safe_entries(tasks_dir):
         if not session_dir.is_dir():
             continue
@@ -678,23 +790,50 @@ def ingest_tasks(conn: sqlite3.Connection) -> int:
         for task_file in _iter_safe_entries(session_dir):
             if not _is_safe_regular_file(task_file) or task_file.suffix != ".json":
                 continue
+            mtime = _path_mtime_iso(task_file)
+            if mtime is None:
+                continue
+            path_str = str(task_file)
+            seen_paths.add(path_str)
+
+            prev = _get_file_state(conn, "tasks", path_str)
+            if prev is not None and prev["mtime"] == mtime:
+                continue
+
             try:
                 with open(task_file, encoding="utf-8", errors="ignore") as fh:
                     data = json.loads(fh.read())
             except (OSError, json.JSONDecodeError):
                 continue
+
+            task_id = data.get("id", task_file.stem)
             conn.execute(
-                "INSERT INTO tasks (session_id, task_id, subject, description, status, raw_json) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO tasks (session_id, task_id, subject, description, status, raw_json, source_path) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(session_id, task_id) DO UPDATE SET "
+                "subject=excluded.subject, description=excluded.description, status=excluded.status, "
+                "raw_json=excluded.raw_json, source_path=excluded.source_path",
                 (
                     session_id,
-                    data.get("id", task_file.stem),
+                    task_id,
                     data.get("subject", ""),
                     data.get("description", ""),
                     data.get("status", ""),
                     json.dumps(data),
+                    path_str,
                 ),
             )
             count += 1
+            _set_file_state(conn, "tasks", path_str, mtime, 0)
+
+    rows = conn.execute(
+        "SELECT DISTINCT source_path FROM tasks WHERE source_path IS NOT NULL"
+    ).fetchall()
+    for row in rows:
+        path = row[0]
+        if path and path not in seen_paths:
+            conn.execute("DELETE FROM tasks WHERE source_path=?", (path,))
+            _delete_file_state(conn, "tasks", path)
 
     _commit_and_harden(conn)
     return count
@@ -703,14 +842,27 @@ def ingest_tasks(conn: sqlite3.Connection) -> int:
 def ingest_exports(conn: sqlite3.Connection) -> int:
     """Parse raw JSONL transcripts for live system-reminder injections."""
     proj_dir = CLAUDE_DIR / "projects"
-    conn.execute("DELETE FROM system_reminders")
-
     if not proj_dir.exists():
+        conn.execute("DELETE FROM system_reminders")
+        conn.execute("DELETE FROM ingest_file_state WHERE source='exports'")
         _commit_and_harden(conn)
         return 0
 
     count = 0
+    seen_files: set[str] = set()
+
     for path in _walk_safe_files(proj_dir, ".jsonl"):
+        mtime = _path_mtime_iso(path)
+        if mtime is None:
+            continue
+        path_str = str(path)
+        seen_files.add(path_str)
+
+        prev = _get_file_state(conn, "exports", path_str)
+        if prev is not None and prev["mtime"] == mtime:
+            continue
+
+        conn.execute("DELETE FROM system_reminders WHERE source_file=?", (path_str,))
         try:
             with open(path, encoding="utf-8", errors="ignore") as fh:
                 for line_number, raw_line in enumerate(fh, start=1):
@@ -726,11 +878,20 @@ def ingest_exports(conn: sqlite3.Connection) -> int:
                     reminder_text, reminder_timestamp = extracted
                     conn.execute(
                         "INSERT INTO system_reminders (source_file, line_number, content, timestamp) VALUES (?, ?, ?, ?)",
-                        (str(path), line_number, reminder_text, reminder_timestamp),
+                        (path_str, line_number, reminder_text, reminder_timestamp),
                     )
                     count += 1
         except OSError:
-            pass
+            continue
+
+        _set_file_state(conn, "exports", path_str, mtime, 0)
+
+    rows = conn.execute("SELECT DISTINCT source_file FROM system_reminders").fetchall()
+    for row in rows:
+        source_file = row[0]
+        if source_file and source_file not in seen_files:
+            conn.execute("DELETE FROM system_reminders WHERE source_file=?", (source_file,))
+            _delete_file_state(conn, "exports", source_file)
 
     _commit_and_harden(conn)
     return count

@@ -18,26 +18,78 @@ tagged.
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import sys
 import threading
+import time
 import traceback
+from pathlib import Path
 from typing import Any, Callable
 
 from . import db
 from . import states
 from . import tokens
-from .app import get_setup_status, serve as _serve_dashboard
+from .app import get_setup_status, serve as _serve_dashboard, sync_installed_probe
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "neo"
 SERVER_VERSION = "0.1.0"
 DASHBOARD_PORT = 7777
+# Periodic re-ingest interval for the dashboard-owner process.
+INGEST_INTERVAL_SEC = 30
+# Filesystem lock that ensures only one neo-mcp process per host runs the
+# heavy ingest + dashboard. Released automatically by the kernel when the
+# owning process exits, so a follower picks up the role on the next startup.
+OWNER_LOCK_PATH = Path.home() / ".neo" / ".mcp-owner.lock"
+
+# Env-var escape hatches: set to "0" to opt out of the background work.
+ENV_PERIODIC = "NEO_MCP_PERIODIC_INGEST"
+ENV_DASHBOARD = "NEO_MCP_DASHBOARD"
 
 SELF_FILTER_SQL = "(source IS NULL OR source != 'neo_mcp_call')"
 
 _dashboard_started = False
 _dashboard_lock = threading.Lock()
+_owner_lock_handle = None  # kept open for the lifetime of the owning process
+
+
+def _env_enabled(name: str, default: bool = True) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+def _try_acquire_owner_role() -> bool:
+    """Claim the per-host dashboard+ingest role via a non-blocking fcntl lock.
+
+    Returns True if we got it (we are the owner), False if another neo-mcp
+    process on this host already owns it (we are a follower).
+    """
+    global _owner_lock_handle
+    try:
+        OWNER_LOCK_PATH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        handle = open(OWNER_LOCK_PATH, "w")
+    except OSError:
+        return False
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError):
+        handle.close()
+        return False
+    _owner_lock_handle = handle
+    return True
+
+
+def _periodic_ingest() -> None:
+    while True:
+        time.sleep(INGEST_INTERVAL_SEC)
+        try:
+            db.ingest_all()
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
 
 
 def _start_dashboard() -> None:
@@ -46,16 +98,50 @@ def _start_dashboard() -> None:
         if _dashboard_started:
             return
         _dashboard_started = True
+
+    if not _try_acquire_owner_role():
+        # Another neo-mcp on this host already owns ingest + dashboard.
+        # As a follower we still serve MCP tool calls against the shared
+        # SQLite DB, but we do no ingest and bind no ports — so spawning
+        # extra Claude sessions no longer multiplies CPU.
+        return
+
+    try:
+        sync_installed_probe()
+    except Exception:
+        traceback.print_exc(file=sys.stderr)
+
+    periodic_enabled = _env_enabled(ENV_PERIODIC, default=True)
+    dashboard_enabled = _env_enabled(ENV_DASHBOARD, default=True)
+
+    if periodic_enabled:
+        # Initial ingest is incremental — cheap when nothing changed. Run it
+        # in its own thread so initialize() isn't blocked on the cold path.
+        threading.Thread(
+            target=_initial_ingest,
+            daemon=True,
+            name="neo-initial-ingest",
+        ).start()
+        threading.Thread(
+            target=_periodic_ingest,
+            daemon=True,
+            name="neo-periodic-ingest",
+        ).start()
+
+    if dashboard_enabled:
+        threading.Thread(
+            target=_serve_dashboard,
+            args=(DASHBOARD_PORT, False),
+            daemon=True,
+            name="neo-dashboard",
+        ).start()
+
+
+def _initial_ingest() -> None:
     try:
         db.ingest_all()
     except Exception:
         traceback.print_exc(file=sys.stderr)
-    threading.Thread(
-        target=_serve_dashboard,
-        args=(DASHBOARD_PORT, True),
-        daemon=True,
-        name="neo-dashboard",
-    ).start()
 
 
 # ── helpers ─────────────────────────────────────────────────────────
