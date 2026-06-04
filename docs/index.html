@@ -7,17 +7,12 @@
   <meta name="description" content="Local workflow forensics for Claude Code: reminders found on disk, transcripts, retained telemetry rows, hooks, and memory artifacts surfaced from local files.">
   <style>
     :root {
-      --bg: #060907;
-      --bg-soft: #0b120d;
-      --panel: rgba(11, 18, 13, 0.9);
-      --fg: #ddf7e2;
-      --muted: #8cb194;
-      --line: rgba(83, 181, 104, 0.18);
+      --bg: #070b08;
+      --fg: #d7eedb;
+      --muted: #84a98c;
+      --line: rgba(120, 180, 132, 0.16);
       --accent: #68ff86;
-      --accent-2: #2ee66d;
-      --warn: #f0e68c;
-      --shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
-      --grid: rgba(83, 181, 104, 0.06);
+      --code: #f0e68c;
     }
     * { box-sizing: border-box; }
     html { scroll-behavior: smooth; }
@@ -25,534 +20,255 @@
       margin: 0;
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
       color: var(--fg);
-      background:
-        linear-gradient(var(--grid) 1px, transparent 1px),
-        linear-gradient(90deg, var(--grid) 1px, transparent 1px),
-        radial-gradient(circle at top, rgba(45, 170, 82, 0.18), transparent 28%),
-        radial-gradient(circle at 80% 0, rgba(24, 120, 51, 0.14), transparent 24%),
-        var(--bg);
-      background-size: 32px 32px, 32px 32px, auto, auto, auto;
-      min-height: 100vh;
+      background: var(--bg);
+      line-height: 1.7;
+      -webkit-font-smoothing: antialiased;
     }
-    a { color: inherit; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code { color: var(--code); }
     .wrap {
-      width: min(1180px, calc(100% - 32px));
+      width: min(720px, calc(100% - 40px));
       margin: 0 auto;
-      padding: 28px 0 72px;
-    }
-    .topline,
-    .section-head,
-    .footer {
-      display: flex;
-      justify-content: space-between;
-      gap: 16px;
-      align-items: baseline;
-      flex-wrap: wrap;
+      padding: 48px 0 80px;
     }
     .topline {
       color: var(--muted);
       font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.18em;
-      margin-bottom: 26px;
-    }
-    .hero {
-      display: grid;
-      grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.85fr);
-      gap: 28px;
-      align-items: stretch;
-      margin-bottom: 30px;
-    }
-    .hero-copy,
-    .hero-side,
-    .panel,
-    .matrix-card,
-    .install-card,
-    .paths-card,
-    .signal-card,
-    .footer {
-      border: 1px solid var(--line);
-      border-radius: 24px;
-      background: linear-gradient(180deg, rgba(13, 22, 15, 0.94), rgba(8, 14, 10, 0.96));
-      box-shadow: var(--shadow);
-    }
-    .hero-copy {
-      padding: 28px;
-      min-height: 560px;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-    }
-    .kicker,
-    .label,
-    .mini-label {
-      color: var(--accent);
-      text-transform: uppercase;
-      letter-spacing: 0.18em;
-      font-size: 12px;
+      letter-spacing: 0.04em;
+      margin-bottom: 56px;
     }
     h1 {
-      margin: 18px 0 18px;
-      font-size: clamp(56px, 12vw, 140px);
-      line-height: 0.88;
-      letter-spacing: -0.08em;
+      font-size: 40px;
+      letter-spacing: -0.03em;
+      margin: 0 0 6px;
     }
     .lede {
-      max-width: 14ch;
-      font-size: clamp(24px, 4vw, 44px);
-      line-height: 0.98;
-      letter-spacing: -0.05em;
-      margin: 0 0 18px;
+      color: var(--fg);
+      font-size: 19px;
+      margin: 0 0 24px;
     }
-    .body-copy {
-      max-width: 54ch;
-      color: #c6dec8;
-      font-size: 17px;
-      line-height: 1.72;
-      margin: 0 0 18px;
-    }
-    .pill-row {
+    p { color: #c3d8c7; margin: 0 0 16px; }
+    .hero-row {
       display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin: 22px 0 26px;
+      gap: 28px;
+      align-items: flex-start;
+      margin-bottom: 40px;
     }
-    .pill {
+    .hero-row img {
+      width: 120px;
+      height: 120px;
+      object-fit: cover;
       border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 8px 12px;
-      color: var(--muted);
-      font-size: 11px;
+      flex-shrink: 0;
+    }
+    .links {
+      display: flex;
+      gap: 18px;
+      flex-wrap: wrap;
+      font-size: 14px;
+      margin-top: 8px;
+    }
+    section { margin-top: 48px; }
+    h2 {
+      font-size: 13px;
       text-transform: uppercase;
       letter-spacing: 0.12em;
-      background: rgba(104, 255, 134, 0.05);
+      color: var(--muted);
+      font-weight: 600;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 8px;
+      margin: 0 0 20px;
     }
-    .cta-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 12px;
+    h3 {
+      font-size: 16px;
+      margin: 24px 0 6px;
+      letter-spacing: -0.01em;
     }
-    .cta {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 48px;
-      padding: 0 18px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      text-decoration: none;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.16em;
-      color: var(--fg);
-      background: rgba(104, 255, 134, 0.04);
-    }
-    .cta.primary {
-      background: linear-gradient(180deg, rgba(104,255,134,0.24), rgba(46,230,109,0.13));
-      border-color: rgba(104, 255, 134, 0.34);
-    }
-    .cta:hover {
-      border-color: rgba(104, 255, 134, 0.34);
-      background: rgba(104, 255, 134, 0.08);
-    }
-    .hero-side {
-      padding: 20px;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-    }
-    .hero-side img {
-      width: 100%;
-      aspect-ratio: 1 / 1;
-      object-fit: cover;
-      border-radius: 18px;
-      border: 1px solid var(--line);
-      display: block;
-      background: #040604;
-    }
-    .side-card {
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      padding: 16px;
-      background: rgba(104, 255, 134, 0.035);
-    }
-    .side-card p {
-      margin: 10px 0 0;
-      color: #c6dec8;
-      font-size: 15px;
-      line-height: 1.65;
-    }
+    h3:first-of-type { margin-top: 0; }
     .stats {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 14px;
-      margin: 0 0 30px;
-    }
-    .panel {
-      padding: 18px;
-      min-height: 138px;
-    }
-    .stat-value {
-      font-size: clamp(32px, 4vw, 54px);
-      line-height: 1;
-      letter-spacing: -0.06em;
-      margin: 14px 0 10px;
-    }
-    .stat-copy {
-      color: var(--muted);
-      font-size: 13px;
-      line-height: 1.6;
+      list-style: none;
+      padding: 0;
       margin: 0;
     }
-    .signal-strip {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 14px;
-      margin: 0 0 30px;
-    }
-    .signal-card {
-      padding: 18px;
-    }
-    .signal-card p {
-      margin: 12px 0 0;
-      color: #c6dec8;
-      font-size: 14px;
-      line-height: 1.7;
-    }
-    .section {
-      margin-top: 34px;
-    }
-    .section-head {
-      border-top: 1px solid var(--line);
-      padding-top: 18px;
-      margin-bottom: 18px;
-      color: var(--muted);
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.16em;
-    }
-    .matrix {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+    .stats li {
+      display: flex;
       gap: 16px;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--line);
+      align-items: baseline;
     }
-    .matrix-card {
-      padding: 18px;
+    .stats li:last-child { border-bottom: 0; }
+    .stats .val {
+      color: var(--accent);
+      font-size: 18px;
+      min-width: 72px;
+      flex-shrink: 0;
     }
-    .matrix-card h3,
-    .install-card h3,
-    .paths-card h3 {
-      margin: 12px 0 10px;
-      font-size: 22px;
-      letter-spacing: -0.04em;
-    }
-    .matrix-card p,
-    .install-card p,
-    .paths-card p {
-      margin: 0;
-      color: #c6dec8;
-      line-height: 1.68;
-      font-size: 15px;
-    }
-    .split {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(300px, 0.95fr);
-      gap: 16px;
-      margin-top: 16px;
-    }
-    .install-card,
-    .paths-card {
-      padding: 20px;
-    }
+    .stats .desc { color: #c3d8c7; font-size: 14px; }
+    ul.plain { padding-left: 20px; margin: 0; }
+    ul.plain li { margin: 4px 0; color: #c3d8c7; font-size: 14px; }
     pre {
-      margin: 16px 0 0;
-      padding: 16px;
+      margin: 12px 0 0;
+      padding: 14px 16px;
       overflow: auto;
-      border-radius: 16px;
       border: 1px solid var(--line);
-      background: rgba(3, 7, 4, 0.72);
+      background: rgba(0, 0, 0, 0.3);
       color: #dfffe2;
       font-size: 13px;
-      line-height: 1.7;
+      line-height: 1.6;
     }
-    code {
-      font-family: inherit;
-      color: var(--warn);
-    }
-    ul {
-      margin: 14px 0 0;
-      padding-left: 18px;
-      color: #c6dec8;
-      line-height: 1.8;
-      font-size: 15px;
-    }
-    li + li { margin-top: 6px; }
-    .footer {
-      margin-top: 34px;
-      padding: 18px 20px;
+    footer {
+      margin-top: 64px;
+      padding-top: 16px;
+      border-top: 1px solid var(--line);
       color: var(--muted);
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.14em;
+      font-size: 13px;
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
     }
-    .footer a {
-      text-decoration: none;
-      color: var(--fg);
-    }
-    @media (max-width: 980px) {
-      .hero,
-      .split,
-      .matrix,
-      .stats,
-      .signal-strip {
-        grid-template-columns: 1fr;
-      }
-      .hero-copy {
-        min-height: auto;
-      }
-      h1 {
-        font-size: clamp(52px, 20vw, 108px);
-      }
-      .lede {
-        max-width: none;
-      }
+    @media (max-width: 560px) {
+      .hero-row { flex-direction: column-reverse; align-items: flex-start; }
     }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <div class="topline">
-      <div>neo · local workflow forensics · claude code</div>
-      <div>dashboard · mcp · evidence from disk</div>
+    <div class="topline">neo · local workflow forensics · claude code</div>
+
+    <div class="hero-row">
+      <div>
+        <h1>neo</h1>
+        <p class="lede">The interesting part is what stayed on disk.</p>
+        <p>
+          neo reads Claude Code's local artifacts directly: reminder text found on
+          disk, raw transcripts, subagent copies, retained telemetry rows, memory
+          files, and hook-visible lifecycle events. It indexes them into SQLite and
+          exposes them through a dashboard and MCP server running on the same machine.
+        </p>
+        <div class="links">
+          <a href="https://github.com/asuramaya/neo">repo</a>
+          <a href="#install">install</a>
+          <a href="#surfaces">surfaces</a>
+          <a href="https://github.com/asuramaya/neo/blob/main/README.md">readme</a>
+        </div>
+      </div>
+      <img src="https://raw.githubusercontent.com/asuramaya/neo/main/neo.jpg" alt="neo mascot">
     </div>
 
-    <section class="hero">
-      <div class="hero-copy">
-        <div>
-          <div class="kicker">inspect what the UI leaves out</div>
-          <h1>neo</h1>
-          <p class="lede">The interesting part is what stayed on disk.</p>
-          <p class="body-copy">
-            neo reads Claude Code's local artifacts directly: reminder text found
-            on disk, raw transcripts, subagent copies, retained telemetry rows,
-            memory files, and hook-visible lifecycle events. It indexes them into
-            SQLite and exposes them through a dashboard and MCP server running on
-            the same machine.
-          </p>
-          <div class="pill-row">
-            <span class="pill">measured</span>
-            <span class="pill">estimated</span>
-            <span class="pill">inferred</span>
-            <span class="pill">localhost only</span>
-            <span class="pill">neo-harnesster</span>
-          </div>
-        </div>
-        <div class="cta-row">
-          <a class="cta primary" href="https://github.com/asuramaya/neo">open repo</a>
-          <a class="cta" href="#install">install</a>
-          <a class="cta" href="#surfaces">see the surfaces</a>
-        </div>
-      </div>
-
-      <aside class="hero-side">
-        <img src="https://raw.githubusercontent.com/asuramaya/neo/main/neo.jpg" alt="neo mascot">
-        <div class="side-card">
-          <div class="label">why it exists</div>
-          <p>
-            The export boundary strips some of the most interesting material.
-            neo starts from raw JSONL and local state instead of the cleaned
-            transcript.
-          </p>
-        </div>
-        <div class="side-card">
-          <div class="label">package</div>
-          <p><code>pipx install neo-harnesster</code><br>package name changed. command stayed <code>neo</code>.</p>
-        </div>
-      </aside>
+    <section>
+      <h2>Why it exists</h2>
+      <p>
+        Claude Code exports cleaner transcripts than the local corpus actually
+        contains. The export boundary strips some of the most interesting material,
+        so neo starts from raw JSONL and local state instead of the cleaned
+        transcript. The dashboard binds to localhost, the database lives under
+        <code>~/.neo/</code>, and the project does not transmit your data anywhere.
+      </p>
     </section>
 
-    <section class="stats">
-      <div class="panel">
-        <div class="mini-label">one machine</div>
-        <div class="stat-value">714</div>
-        <p class="stat-copy">hidden reminder rows found on disk in a single local corpus.</p>
-      </div>
-      <div class="panel">
-        <div class="mini-label">data share</div>
-        <div class="stat-value">62.5%</div>
-        <p class="stat-copy">of local data volume came from context outside the visible chat transcript in one sample corpus.</p>
-      </div>
-      <div class="panel">
-        <div class="mini-label">multiplier</div>
-        <div class="stat-value">2.7x</div>
-        <p class="stat-copy">local evidence volume relative to what the UI would suggest from the primary conversation alone.</p>
-      </div>
-      <div class="panel">
-        <div class="mini-label">telemetry</div>
-        <div class="stat-value">varies</div>
-        <p class="stat-copy">telemetry rows only count what is still retained on disk. Absence does not prove upload or deletion.</p>
-      </div>
+    <section>
+      <h2>From one local corpus</h2>
+      <ul class="stats">
+        <li>
+          <span class="val">714</span>
+          <span class="desc">hidden reminder rows found on disk in a single local corpus.</span>
+        </li>
+        <li>
+          <span class="val">62.5%</span>
+          <span class="desc">of local data volume came from context outside the visible chat transcript in one sample corpus.</span>
+        </li>
+        <li>
+          <span class="val">2.7x</span>
+          <span class="desc">local evidence volume relative to what the UI would suggest from the primary conversation alone.</span>
+        </li>
+        <li>
+          <span class="val">varies</span>
+          <span class="desc">telemetry rows only count what is still retained on disk. Absence does not prove upload or deletion.</span>
+        </li>
+      </ul>
     </section>
 
-    <section class="signal-strip">
-      <article class="signal-card">
-        <div class="label">export boundary</div>
-        <p>
-          Claude Code exports cleaner transcripts than the local corpus actually
-          contains. neo exists in the gap between those two file surfaces.
-        </p>
-      </article>
-      <article class="signal-card">
-        <div class="label">local first</div>
-        <p>
-          The dashboard binds to localhost, the database lives under
-          <code>~/.neo/</code>, and the project does not transmit your data
-          anywhere.
-        </p>
-      </article>
-      <article class="signal-card">
-        <div class="label">same-machine mcp</div>
-        <p>
-          The environment can be queried from inside itself: `neo-mcp` exposes
-          the local evidence model back into Claude Code without claiming server
-          internals it cannot see.
-        </p>
-      </article>
+    <section>
+      <h2>What it surfaces</h2>
+      <h3>Reminder injections and raw transcripts</h3>
+      <p>
+        neo reads <code>~/.claude/projects/*.jsonl</code> directly, including system
+        reminders and channel material that the export path strips away.
+      </p>
+      <h3>Subagents, sidechains, and compaction churn</h3>
+      <p>
+        Hook events and local transcript structure make it possible to see when
+        context was copied, compacted, or routed somewhere the main UI does not
+        emphasize.
+      </p>
+      <h3>Measured vs estimated vs inferred</h3>
+      <p>
+        neo keeps row counts, cost heuristics, and anomaly interpretation in
+        separate lanes so the strongest claims stay attached to the strongest
+        evidence.
+      </p>
     </section>
 
-    <section class="section">
-      <div class="section-head">
-        <div>What It Surfaces</div>
-        <div>local files · hooks · accounting</div>
-      </div>
-      <div class="matrix">
-        <article class="matrix-card">
-          <div class="label">capture</div>
-          <h3>Reminder injections and raw transcripts</h3>
-          <p>
-            neo reads `~/.claude/projects/*.jsonl` directly, including system
-            reminders and channel material that the export path strips away.
-          </p>
-        </article>
-        <article class="matrix-card">
-          <div class="label">trace</div>
-          <h3>Subagents, sidechains, and compaction churn</h3>
-          <p>
-            Hook events and local transcript structure make it possible to see
-            when context was copied, compacted, or routed somewhere the main UI
-            does not emphasize.
-          </p>
-        </article>
-        <article class="matrix-card">
-          <div class="label">account</div>
-          <h3>Measured vs estimated vs inferred</h3>
-          <p>
-            neo keeps row counts, cost heuristics, and anomaly interpretation in
-            separate lanes so the strongest claims stay attached to the strongest
-            evidence.
-          </p>
-        </article>
-      </div>
+    <section id="surfaces">
+      <h2>Surfaces</h2>
+      <h3>Dashboard — browser-first local inspection</h3>
+      <p>
+        Summary cards, reminders with provenance, sessions, agents, correlations,
+        retained telemetry, memory files, and heuristic state-model analysis served
+        from localhost.
+      </p>
+      <h3>MCP — query from inside Claude Code</h3>
+      <p>
+        <code>neo-mcp</code> registers into Claude Code so the local evidence can be
+        queried from inside the same tool it is inspecting.
+      </p>
+      <h3>Terminal — quick accounting without the UI</h3>
+      <p>
+        <code>neo-tokens</code> and <code>neo-states</code> give you the accounting
+        and state-model views directly when a browser is unnecessary.
+      </p>
     </section>
 
-    <section class="section" id="surfaces">
-      <div class="section-head">
-        <div>Surfaces</div>
-        <div>browser · terminal · mcp</div>
-      </div>
-      <div class="matrix">
-        <article class="matrix-card">
-          <div class="label">dashboard</div>
-          <h3>Browser-first local inspection</h3>
-          <p>
-            Summary cards, reminders with provenance, sessions, agents,
-            correlations, retained telemetry, memory files, and heuristic
-            state-model analysis served from localhost.
-          </p>
-        </article>
-        <article class="matrix-card">
-          <div class="label">mcp</div>
-          <h3>Query from inside Claude Code</h3>
-          <p>
-            `neo-mcp` registers into Claude Code so the local evidence can be
-            queried from inside the same tool it is inspecting.
-          </p>
-        </article>
-        <article class="matrix-card">
-          <div class="label">terminal</div>
-          <h3>Quick accounting without the UI</h3>
-          <p>
-            `neo-tokens` and `neo-states` give you the accounting and
-            state-model views directly when a browser is unnecessary.
-          </p>
-        </article>
-      </div>
+    <section>
+      <h2>What it captures</h2>
+      <h3>Reads from</h3>
+      <ul class="plain">
+        <li><code>~/.claude/projects/*.jsonl</code> for full transcripts and reminders</li>
+        <li><code>~/.claude/projects/*/subagents/</code> for spawned files and sidechains</li>
+        <li><code>~/.neo/harness_log.jsonl</code> for hook events and compaction traces</li>
+        <li><code>~/.claude/telemetry/</code> for telemetry rows currently retained on disk</li>
+        <li><code>~/.claude/projects/*/memory/</code> for persistent seeded memory</li>
+        <li><code>~/.claude/tasks/</code> for task lifecycle state</li>
+      </ul>
+      <h3>Cannot capture</h3>
+      <ul class="plain">
+        <li>server-side reasoning or model internals that never land on disk</li>
+        <li>the contents of any secondary channel not persisted locally</li>
+        <li>whether absent telemetry rows were uploaded, deleted, or never written locally</li>
+        <li>system prompt assembly inside the compiled binary</li>
+        <li>HTTPS request and response bodies without a proxy</li>
+      </ul>
     </section>
 
-    <section class="section" id="captures">
-      <div class="section-head">
-        <div>What It Captures</div>
-        <div>raw locations</div>
-      </div>
-      <div class="split">
-        <article class="paths-card">
-          <div class="label">reads from</div>
-          <h3>Local evidence paths</h3>
-          <ul>
-            <li><code>~/.claude/projects/*.jsonl</code> for full transcripts and reminders</li>
-            <li><code>~/.claude/projects/*/subagents/</code> for spawned files and sidechains</li>
-            <li><code>~/.neo/harness_log.jsonl</code> for hook events and compaction traces</li>
-            <li><code>~/.claude/telemetry/</code> for telemetry rows currently retained on disk</li>
-            <li><code>~/.claude/projects/*/memory/</code> for persistent seeded memory</li>
-            <li><code>~/.claude/tasks/</code> for task lifecycle state</li>
-          </ul>
-        </article>
-        <article class="paths-card">
-          <div class="label">cannot capture</div>
-          <h3>Boundaries stay explicit</h3>
-          <ul>
-            <li>server-side reasoning or model internals that never land on disk</li>
-            <li>the contents of any secondary channel not persisted locally</li>
-            <li>whether absent telemetry rows were uploaded, deleted, or never written locally</li>
-            <li>system prompt assembly inside the compiled binary</li>
-            <li>HTTPS request and response bodies without a proxy</li>
-          </ul>
-        </article>
-      </div>
-    </section>
-
-    <section class="section" id="install">
-      <div class="section-head">
-        <div>Install</div>
-        <div>package name changed · command stayed clean</div>
-      </div>
-      <div class="split">
-        <article class="install-card">
-          <div class="label">recommended</div>
-          <h3>Install with pipx</h3>
-          <p>
-            The package is <code>neo-harnesster</code>. The command stays
-            <code>neo</code>.
-          </p>
-          <pre>pipx install neo-harnesster
+    <section id="install">
+      <h2>Install</h2>
+      <p>
+        The package is <code>neo-harnesster</code>. The command stays <code>neo</code>.
+      </p>
+      <pre>pipx install neo-harnesster
 neo</pre>
-        </article>
-        <article class="install-card">
-          <div class="label">from source</div>
-          <h3>Run directly from the repo</h3>
-          <p>
-            Useful if you want to inspect the implementation or keep the tool
-            next to your own local experiments.
-          </p>
-          <pre>git clone https://github.com/asuramaya/neo.git
+      <h3>From source</h3>
+      <p>Inspect the implementation or keep the tool next to your own experiments.</p>
+      <pre>git clone https://github.com/asuramaya/neo.git
 cd neo
 python3 neo.py</pre>
-        </article>
-      </div>
     </section>
 
-    <footer class="footer">
-      <div>neo · local workflow forensics · built from the thing it monitors</div>
+    <footer>
+      <div>neo · built from the thing it monitors</div>
       <div>
         <a href="https://github.com/asuramaya/neo">repo</a> ·
         <a href="https://github.com/asuramaya/neo/blob/main/README.md">readme</a> ·
