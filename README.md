@@ -17,7 +17,7 @@
   <a href="https://github.com/asuramaya/neo/blob/main/security_best_practices_report.md">Security notes</a>
 </p>
 
-> Local workflow forensics for Claude Code. neo indexes reminder text found on
+> Local workflow forensics for Claude Code. neo indexes text found on
 > disk, transcripts, retained telemetry rows, hook-visible lifecycle events,
 > and memory artifacts into a SQLite database, then exposes them through a
 > dashboard and an MCP server running on the same machine.
@@ -28,9 +28,6 @@
 - **Separates measured, estimated, and inferred claims** so row counts stay distinct from heuristics and anomaly labels
 - **Exposes a local operator surface** through a browser dashboard, terminal commands, and an MCP server registered inside Claude Code
 - **Makes local overhead visible** by surfacing reminder injections, sidechains, compaction churn, retained telemetry rows, and other traces the UI does not foreground
-
-The point is not to speculate about what the system might be doing. The point is
-to inspect what it actually left on disk.
 
 ## Install
 
@@ -190,15 +187,6 @@ or `python3 neo.py` migrates `~/.harnesster/` to `~/.neo/` and renames
 automatically.
 
 The `harnesster` command remains as a forwarding shim.
-
-## Origin
-
-Built during [session 21](https://github.com/asuramaya/heinrich) of the
-[Like-Us](https://github.com/asuramaya/Like-Us) project. A conversation that
-started with SSH key management and ended with the discovery of hidden
-instructions in every Claude Code session.
-
-The tool was built by the thing it monitors.
 
 ## License
 
