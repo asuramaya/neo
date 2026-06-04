@@ -263,9 +263,15 @@ def register_mcp_server() -> None:
     """Register neo as a stdio MCP server in ~/.claude.json.
 
     Claude Code reads this file at startup to learn which MCP servers to
-    spawn. We add (or update) an entry under ``mcpServers.neo`` that runs
-    ``python -m neo.mcp_server``. Idempotent: re-running setup just keeps
-    the command in sync with the current Python interpreter.
+    spawn, launching each with the project directory as the working dir.
+    We must NOT use ``python -m neo.mcp_server`` here: ``-m`` prepends the
+    cwd to ``sys.path``, so a project containing a top-level ``neo.py``
+    (like neo's own repo) shadows the installed package and the import
+    fails with ``'neo' is not a package``. Instead we register the
+    ``neo-mcp`` console script, whose ``sys.path[0]`` is its own bin dir,
+    never the cwd. When running from source (no console script), fall back
+    to the ``neo.py`` shim, which front-loads ``src/`` onto the path.
+    Idempotent: re-running setup just keeps the command in sync.
     """
     if not CLAUDE_CONFIG_PATH.exists():
         config: dict = {}
@@ -288,12 +294,25 @@ def register_mcp_server() -> None:
         print("WARN: ~/.claude.json field 'mcpServers' must be an object; skipping.")
         return
 
-    desired = {
-        "type": "stdio",
-        "command": sys.executable,
-        "args": ["-m", "neo.mcp_server"],
-        "env": {},
-    }
+    console_script = Path(sys.executable).parent / "neo-mcp"
+    if console_script.exists():
+        desired = {
+            "type": "stdio",
+            "command": str(console_script),
+            "args": [],
+            "env": {},
+        }
+    else:
+        # Running from source (e.g. `python3 neo.py --setup`) with no
+        # installed console script. Point at the repo shim, which fixes
+        # sys.path before importing the package.
+        shim = Path(__file__).resolve().parents[2] / "neo.py"
+        desired = {
+            "type": "stdio",
+            "command": sys.executable,
+            "args": [str(shim), "--mcp"],
+            "env": {},
+        }
 
     current = servers.get(MCP_SERVER_NAME)
     if current == desired:
