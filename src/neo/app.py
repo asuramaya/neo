@@ -11,16 +11,22 @@ neo — see what Claude Code hides from you
   python3 neo.py --dashboard --no-open  # don't auto-launch browser
 """
 
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
+import threading
 import traceback
 import webbrowser
 import http.server
 import importlib.resources
+from datetime import datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
 from socketserver import ThreadingMixIn
@@ -40,6 +46,50 @@ TEMPLATE_PATH = SCRIPT_DIR / "dashboard.html"
 RESOURCE_TEMPLATE_PACKAGE = "neo"
 RESOURCE_TEMPLATE_NAME = "dashboard.html"
 DEFAULT_PORT = 7777
+
+
+def _package_version() -> str:
+    try:
+        from importlib.metadata import version, PackageNotFoundError
+        try:
+            return version("neo-harnesster")
+        except PackageNotFoundError:
+            return "0.0.0"
+    except Exception:
+        return "0.0.0"
+
+
+NEO_VERSION = _package_version()
+
+# Shared HTTP MCP transport: a single daemon serves the dashboard AND the MCP
+# protocol at this path, so every Claude Code session is just an HTTP client of
+# one process (no per-session subprocess, no version skew).
+MCP_HTTP_PATH = "/mcp"
+NEO_DIR = Path.home() / ".neo"
+MCP_TOKEN_PATH = NEO_DIR / "mcp-token"
+
+
+def mcp_token() -> str:
+    """Return the bearer token guarding the local /mcp endpoint, creating it on
+    first use. The port is localhost-only, but any local process can reach it,
+    so tool access (higher privilege than the read-only dashboard) needs a secret."""
+    try:
+        if MCP_TOKEN_PATH.exists():
+            tok = MCP_TOKEN_PATH.read_text(encoding="utf-8").strip()
+            if tok:
+                return tok
+        NEO_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        tok = secrets.token_hex(32)
+        MCP_TOKEN_PATH.write_text(tok, encoding="utf-8")
+        try:
+            os.chmod(MCP_TOKEN_PATH, 0o600)
+        except OSError:
+            pass
+        return tok
+    except OSError:
+        # Fall back to an in-memory token if disk is unavailable; still better
+        # than no auth, though it won't match a client across restarts.
+        return ""
 LEGACY_APP_DIR = Path.home() / ".harnesster"
 LEGACY_DB_NAME = "harnesster.db"
 MCP_SERVER_NAME = "neo"
@@ -254,24 +304,79 @@ def setup() -> None:
         check=False,
     )
 
+    install_daemon_service()
     register_mcp_server()
 
     print("restart Claude Code for hooks to take effect.\n")
 
 
-def register_mcp_server() -> None:
-    """Register neo as a stdio MCP server in ~/.claude.json.
+SYSTEMD_USER_DIR = Path.home() / ".config" / "systemd" / "user"
+SYSTEMD_UNIT_NAME = "neo.service"
 
-    Claude Code reads this file at startup to learn which MCP servers to
-    spawn, launching each with the project directory as the working dir.
-    We must NOT use ``python -m neo.mcp_server`` here: ``-m`` prepends the
-    cwd to ``sys.path``, so a project containing a top-level ``neo.py``
-    (like neo's own repo) shadows the installed package and the import
-    fails with ``'neo' is not a package``. Instead we register the
-    ``neo-mcp`` console script, whose ``sys.path[0]`` is its own bin dir,
-    never the cwd. When running from source (no console script), fall back
-    to the ``neo.py`` shim, which front-loads ``src/`` onto the path.
-    Idempotent: re-running setup just keeps the command in sync.
+
+def _daemon_exec() -> str | None:
+    """Command for the systemd unit to run the shared HTTP daemon."""
+    console_script = Path(sys.executable).parent / "neo-mcp"
+    if console_script.exists():
+        return f"{console_script} --http"
+    shim = Path(__file__).resolve().parents[2] / "neo.py"
+    if shim.exists():
+        return f"{sys.executable} {shim} --serve"
+    return None
+
+
+def install_daemon_service() -> None:
+    """Install + start a systemd --user service that keeps the single neo daemon
+    running (auto-start on login, restart on crash). No-op if systemd --user is
+    unavailable; the daemon can also be started manually with `neo-mcp --http`."""
+    if shutil.which("systemctl") is None:
+        print("note: systemctl not found; start the daemon manually with `neo-mcp --http`.")
+        return
+    exec_cmd = _daemon_exec()
+    if not exec_cmd:
+        print("note: could not resolve neo daemon command; start it manually with `neo-mcp --http`.")
+        return
+
+    unit = (
+        "[Unit]\n"
+        "Description=neo MCP + dashboard daemon (single per-host instance)\n"
+        "After=default.target\n\n"
+        "[Service]\n"
+        "Type=simple\n"
+        f"ExecStart={exec_cmd}\n"
+        "Restart=on-failure\n"
+        "RestartSec=3\n\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+    try:
+        SYSTEMD_USER_DIR.mkdir(parents=True, exist_ok=True)
+        (SYSTEMD_USER_DIR / SYSTEMD_UNIT_NAME).write_text(unit, encoding="utf-8")
+    except OSError as exc:
+        print(f"note: could not write systemd unit ({exc}); start the daemon manually with `neo-mcp --http`.")
+        return
+
+    for cmd in (
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "enable", SYSTEMD_UNIT_NAME],
+        ["systemctl", "--user", "restart", SYSTEMD_UNIT_NAME],
+    ):
+        try:
+            subprocess.run(cmd, check=False, capture_output=True, text=True)
+        except Exception as exc:
+            print(f"note: `{' '.join(cmd)}` failed ({exc}).")
+            return
+    print(f"neo daemon service installed and started ({SYSTEMD_UNIT_NAME}).")
+
+
+def register_mcp_server() -> None:
+    """Register neo as an HTTP MCP server in ~/.claude.json.
+
+    neo runs as a single shared daemon (the dashboard process) that also serves
+    the MCP protocol at /mcp. Every Claude Code session connects to that one URL
+    instead of spawning its own stdio subprocess, so there is exactly one neo
+    process per host (no per-session fan-out, no version skew). Access is guarded
+    by a per-host bearer token. Idempotent: re-running setup keeps it in sync.
     """
     if not CLAUDE_CONFIG_PATH.exists():
         config: dict = {}
@@ -294,25 +399,11 @@ def register_mcp_server() -> None:
         print("WARN: ~/.claude.json field 'mcpServers' must be an object; skipping.")
         return
 
-    console_script = Path(sys.executable).parent / "neo-mcp"
-    if console_script.exists():
-        desired = {
-            "type": "stdio",
-            "command": str(console_script),
-            "args": [],
-            "env": {},
-        }
-    else:
-        # Running from source (e.g. `python3 neo.py --setup`) with no
-        # installed console script. Point at the repo shim, which fixes
-        # sys.path before importing the package.
-        shim = Path(__file__).resolve().parents[2] / "neo.py"
-        desired = {
-            "type": "stdio",
-            "command": sys.executable,
-            "args": [str(shim), "--mcp"],
-            "env": {},
-        }
+    desired = {
+        "type": "http",
+        "url": f"http://127.0.0.1:{DEFAULT_PORT}{MCP_HTTP_PATH}",
+        "headers": {"Authorization": f"Bearer {mcp_token()}"},
+    }
 
     current = servers.get(MCP_SERVER_NAME)
     if current == desired:
@@ -335,6 +426,79 @@ def register_mcp_server() -> None:
     print(f"mcp server '{MCP_SERVER_NAME}' registered in {CLAUDE_CONFIG_PATH}")
 
 
+PROCESS_STALE_SEC = 90
+_CODE_VERSION_CACHE = None
+
+
+def code_fingerprint() -> str:
+    """Stamp of the source this process is running: version + hash of package
+    .py/.html file sizes+mtimes. Differing fingerprints = different code, used
+    to flag version skew across Claude sessions' neo-mcp processes."""
+    global _CODE_VERSION_CACHE
+    if _CODE_VERSION_CACHE is not None:
+        return _CODE_VERSION_CACHE
+    base = Path(__file__).resolve().parent
+    digest = hashlib.sha256()
+    try:
+        for f in sorted(base.glob("*.py")) + sorted(base.glob("*.html")):
+            try:
+                st = f.stat()
+            except OSError:
+                continue
+            digest.update(f"{f.name}:{st.st_size}:{int(st.st_mtime)}".encode())
+        _CODE_VERSION_CACHE = f"{NEO_VERSION}+{digest.hexdigest()[:8]}"
+    except Exception:
+        _CODE_VERSION_CACHE = NEO_VERSION
+    return _CODE_VERSION_CACHE
+
+
+def process_report() -> dict:
+    """Live neo-mcp processes across Claude sessions, with version-skew flags."""
+    current = code_fingerprint()
+    now = datetime.now(timezone.utc)
+    procs = []
+    try:
+        rows = db.list_processes()
+    except Exception:
+        rows = []
+    for r in rows:
+        pid = r.get("pid")
+        alive = False
+        if isinstance(pid, int):
+            try:
+                os.kill(pid, 0)
+                alive = True
+            except ProcessLookupError:
+                alive = False
+            except (PermissionError, OSError):
+                alive = True
+        stale_hb = False
+        try:
+            last = datetime.fromisoformat(r["last_seen"]) if r.get("last_seen") else None
+            if last is not None:
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=timezone.utc)
+                stale_hb = (now - last).total_seconds() > PROCESS_STALE_SEC
+        except Exception:
+            pass
+        procs.append({
+            **r,
+            "alive": alive,
+            "is_self": pid == os.getpid(),
+            "stale_heartbeat": stale_hb,
+            "code_skew": r.get("code_version") != current,
+        })
+    live = [p for p in procs if p["alive"]]
+    return {
+        "current_code_version": current,
+        "live_count": len(live),
+        "registered_count": len(procs),
+        "version_skew": len({p.get("code_version") for p in live}) > 1,
+        "owner_count": len([p for p in live if p.get("role") == "owner"]),
+        "processes": procs,
+    }
+
+
 def get_setup_status() -> dict:
     status = {
         "has_settings": SETTINGS_PATH.exists(),
@@ -342,6 +506,7 @@ def get_setup_status() -> dict:
         "installed_probe_exists": INSTALLED_PROBE_PATH.is_file(),
         "hooks_configured": False,
         "hook_command_count": 0,
+        "processes": process_report(),
     }
 
     if not status["has_settings"]:
@@ -404,6 +569,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         try:
             self.enforce_allowed_host()
+            if path == MCP_HTTP_PATH:
+                # No server-initiated SSE stream; clients use POST for RPC.
+                self.respond(HTTPStatus.METHOD_NOT_ALLOWED, b"method not allowed", "text/plain")
+                return
+
             if path in ("/", "/dashboard"):
                 content = load_dashboard_html().encode("utf-8")
                 self.respond(HTTPStatus.OK, content, "text/html")
@@ -435,17 +605,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if path == "/api/sessions":
                 limit = self.get_int_param(params, "limit", 500, minimum=1, maximum=MAX_LIMIT)
                 rows = db.query(
-                    "SELECT project, session_id, mtime, agent_count, compaction_count "
+                    "SELECT project, session_id, mtime, agent_count, sidechain_count, compaction_count "
                     "FROM sessions ORDER BY project, mtime DESC LIMIT ?",
                     (limit,),
                 )
+                comp_events = db.compaction_events_by_session()
+                for row in rows:
+                    row["compaction_events"] = comp_events.get(row.get("session_id"), 0)
                 self.json_response(rows)
                 return
 
             if path == "/api/agents":
                 limit = self.get_int_param(params, "limit", 100, minimum=1, maximum=MAX_LIMIT)
                 rows = db.query(
-                    "SELECT id, project, session_id, file_name, is_compaction, mtime, size_bytes, message_count "
+                    "SELECT id, project, session_id, file_name, is_compaction, is_sidechain, mtime, size_bytes, message_count "
                     "FROM agents ORDER BY mtime DESC LIMIT ?",
                     (limit,),
                 )
@@ -551,7 +724,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 agents_per_project = db.query(
                     "SELECT project, COUNT(*) as total, "
                     "SUM(CASE WHEN is_compaction=1 THEN 1 ELSE 0 END) as compactions, "
-                    "SUM(CASE WHEN is_compaction=0 THEN 1 ELSE 0 END) as agents, "
+                    "SUM(CASE WHEN is_sidechain=1 THEN 1 ELSE 0 END) as sidechains, "
+                    "SUM(CASE WHEN is_compaction=0 AND is_sidechain=0 THEN 1 ELSE 0 END) as agents, "
                     "SUM(message_count) as total_messages "
                     "FROM agents GROUP BY project ORDER BY total DESC LIMIT ?",
                     (project_limit,),
@@ -626,6 +800,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         try:
             self.enforce_allowed_host()
+
+            if path == MCP_HTTP_PATH:
+                self.handle_mcp_post()
+                return
+
             if path != "/api/ingest":
                 self.respond(HTTPStatus.NOT_FOUND, b"not found", "text/plain")
                 return
@@ -642,12 +821,75 @@ class Handler(http.server.BaseHTTPRequestHandler):
             traceback.print_exc()
             self.json_error(HTTPStatus.INTERNAL_SERVER_ERROR, "internal server error")
 
+    def do_DELETE(self):
+        # MCP session termination (Streamable HTTP). neo holds no per-session
+        # state, so just acknowledge.
+        try:
+            self.enforce_allowed_host()
+            if urlparse(self.path).path == MCP_HTTP_PATH:
+                self.enforce_mcp_auth()
+                self.respond(HTTPStatus.OK, b"", "text/plain")
+                return
+            self.respond(HTTPStatus.NOT_FOUND, b"not found", "text/plain")
+        except PermissionError as exc:
+            self.json_error(HTTPStatus.FORBIDDEN, str(exc))
+
     def do_OPTIONS(self):
         try:
             self.enforce_allowed_host()
             self.respond(HTTPStatus.METHOD_NOT_ALLOWED, b"method not allowed", "text/plain")
         except PermissionError as exc:
             self.json_error(HTTPStatus.FORBIDDEN, str(exc))
+
+    def enforce_mcp_auth(self) -> None:
+        expected = getattr(self.server, "mcp_token", "") or ""
+        if not expected:
+            return  # token unavailable (disk error); rely on localhost binding
+        header = self.headers.get("Authorization", "")
+        prefix = "Bearer "
+        provided = header[len(prefix):].strip() if header.startswith(prefix) else ""
+        if not provided or not hmac.compare_digest(provided, expected):
+            raise PermissionError("missing or invalid MCP bearer token")
+
+    def handle_mcp_post(self) -> None:
+        """Serve the MCP protocol (Streamable HTTP) for all Claude sessions from
+        this one process, reusing the JSON-RPC dispatch from mcp_server."""
+        self.enforce_mcp_auth()
+        body = self.read_request_body(max_bytes=4 * 1024 * 1024)
+        try:
+            payload = json.loads(body) if body else None
+        except json.JSONDecodeError:
+            self.respond(HTTPStatus.BAD_REQUEST,
+                         json.dumps({"jsonrpc": "2.0", "id": None,
+                                     "error": {"code": -32700, "message": "parse error"}}).encode("utf-8"),
+                         "application/json")
+            return
+
+        from . import mcp_server  # lazy import avoids a circular import at module load
+
+        messages = payload if isinstance(payload, list) else [payload]
+        responses = []
+        is_initialize = False
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("method") == "initialize":
+                is_initialize = True
+            resp = mcp_server._dispatch(msg)
+            if resp is not None:
+                responses.append(resp)
+
+        if not responses:
+            # All notifications/responses — nothing to return.
+            self.respond(HTTPStatus.ACCEPTED, b"", "text/plain")
+            return
+
+        out = responses if isinstance(payload, list) else responses[0]
+        extra = {}
+        if is_initialize:
+            extra["Mcp-Session-Id"] = secrets.token_hex(16)
+        self.respond(HTTPStatus.OK, json.dumps(out, default=str).encode("utf-8"),
+                     "application/json", extra_headers=extra)
 
     def enforce_allowed_host(self) -> None:
         allowed_hosts = getattr(self.server, "allowed_hosts", set())
@@ -703,11 +945,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def json_error(self, status, message: str):
         self.json_response({"error": message}, status=status)
 
-    def respond(self, code, content: bytes, content_type: str):
+    def respond(self, code, content: bytes, content_type: str, extra_headers: dict | None = None):
         try:
             self.send_response(int(code))
             self.send_header("Content-Type", content_type + "; charset=utf-8")
             self.send_header("Content-Length", str(len(content)))
+            for hk, hv in (extra_headers or {}).items():
+                self.send_header(hk, hv)
             self.send_header("Cache-Control", "no-store")
             self.send_header("Pragma", "no-cache")
             self.send_header("X-Content-Type-Options", "nosniff")
@@ -757,8 +1001,20 @@ def serve(port: int = DEFAULT_PORT, launch_browser: bool = True) -> None:
         f"127.0.0.1:{port}",
         f"localhost:{port}",
     }
+    server.mcp_token = mcp_token()
     url = "http://127.0.0.1:" + str(port)
     print("neo: " + url, file=sys.stderr)
+
+    # Warm the token-accounting cache off the request path so the first
+    # dashboard load doesn't block on a full transcript scan.
+    def _warm_tokens():
+        try:
+            tokens.summary()
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+
+    threading.Thread(target=_warm_tokens, daemon=True, name="neo-tokens-warm").start()
+
     if launch_browser:
         open_browser(url)
     try:

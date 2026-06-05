@@ -106,10 +106,17 @@ function esc(s) {
 }
 
 function api(path, options) {
+  var opts = options || {};
+  var timeoutMs = opts.timeoutMs || 45000;
+  var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
   var requestOptions = Object.assign({
     cache: 'no-store',
     credentials: 'same-origin'
-  }, options || {});
+  }, opts);
+  delete requestOptions.timeoutMs;
+  if (ctrl) requestOptions.signal = ctrl.signal;
+
+  var timer = ctrl ? setTimeout(function() { ctrl.abort(); }, timeoutMs) : null;
 
   return fetch(path, requestOptions).then(function(r) {
     if (!r.ok) {
@@ -118,6 +125,8 @@ function api(path, options) {
       });
     }
     return r.json();
+  }).finally(function() {
+    if (timer) clearTimeout(timer);
   });
 }
 
@@ -602,6 +611,9 @@ function loadAll() {
     var tt = tok.totals || {};
     var hiddenPct = tt.hidden_data_pct || 0;
     var visPct = Math.max(0, Math.round(100 - hiddenPct));
+    var tokBasis = tt.basis === 'tokens';
+    var estPfx = tokBasis ? '' : 'estimated ';
+    var multClass = tokBasis ? 'card measure' : 'card warn';
     var loadedAt = new Date().toISOString().slice(0, 19);
     var o = '';
 
@@ -615,28 +627,82 @@ function loadAll() {
       o += '<div class="onboard"><h3>waiting for data</h3><p>The hooks appear to be installed, but this database is still empty.</p><div class="steps"><div>1. Restart Claude Code after setup.</div><div>2. Use Claude Code for a session.</div><div>3. Click <code>ingest now</code> or run <code>python3 neo.py --ingest</code>.</div></div></div>';
     }
 
+    var procs = (status.processes) || {};
+    if (procs.version_skew) {
+      o += '<div class="onboard"><h3>⚠ version skew across sessions</h3><p>' + (procs.live_count || 0) + ' live neo-mcp processes are running <strong>different code versions</strong>. Each Claude session loads neo at launch, so older sessions serve stale logic until restarted. Current code: <code>' + esc(procs.current_code_version || '?') + '</code>. Restart the stale sessions (or Claude Code) to converge.</p></div>';
+    } else if ((procs.owner_count || 0) === 0 && (procs.live_count || 0) > 0) {
+      o += '<div class="onboard"><h3>no dashboard owner</h3><p>' + (procs.live_count || 0) + ' neo-mcp process(es) are live but none currently owns ingest + dashboard. A follower should take over within ~20s; if not, restart a session.</p></div>';
+    }
+
     o += '<div class="cards">';
     o += '<div class="card danger" onclick="document.getElementById(\'sec-reminders\').scrollIntoView()"><div class="v">' + (sum.system_reminders || 0) + '</div><div class="l">system reminders on disk</div></div>';
-    o += '<div class="card warn" onclick="document.getElementById(\'sec-data\').scrollIntoView()"><div class="v">' + hiddenPct + '%</div><div class="l">estimated hidden data ratio</div></div>';
-    o += '<div class="card warn" onclick="document.getElementById(\'sec-data\').scrollIntoView()"><div class="v">' + (tt.data_multiplier || 0) + 'x</div><div class="l">estimated data multiplier</div></div>';
+    if ((procs.live_count || 0) > 0) o += '<div class="' + (procs.version_skew ? 'card warn' : 'card measure') + '" onclick="document.getElementById(\'sec-procs\').scrollIntoView()"><div class="v">' + procs.live_count + '</div><div class="l">live neo-mcp sessions' + (procs.version_skew ? ' (skew)' : '') + '</div></div>';
+    o += '<div class="' + multClass + '" onclick="document.getElementById(\'sec-data\').scrollIntoView()"><div class="v">' + hiddenPct + '%</div><div class="l">' + estPfx + (tokBasis ? 'hidden token ratio' : 'hidden data ratio') + '</div></div>';
+    o += '<div class="' + multClass + '" onclick="document.getElementById(\'sec-data\').scrollIntoView()"><div class="v">' + (tt.data_multiplier || 0) + 'x</div><div class="l">' + estPfx + 'data multiplier</div></div>';
+    if (tokBasis) o += '<div class="card measure" onclick="document.getElementById(\'sec-data\').scrollIntoView()"><div class="v">' + (tt.cache_read_pct || 0) + '%</div><div class="l">tokens from cache reads</div></div>';
     o += '<div class="card measure" onclick="document.getElementById(\'sec-sessions\').scrollIntoView()"><div class="v">' + (sum.sessions || 0) + '</div><div class="l">measured sessions</div></div>';
-    o += '<div class="card measure" onclick="document.getElementById(\'sec-agents\').scrollIntoView()"><div class="v">' + (sum.agents || 0) + '</div><div class="l">measured subagent logs</div></div>';
-    o += '<div class="card" onclick="document.getElementById(\'sec-data\').scrollIntoView()"><div class="v">' + (tt.sidechains || 0) + '</div><div class="l">detected sidechains</div></div>';
-    o += '<div class="card warn" onclick="document.getElementById(\'sec-data\').scrollIntoView()"><div class="v">' + (tt.transmissions || 0) + '</div><div class="l">estimated API calls</div></div>';
+    o += '<div class="card measure" onclick="document.getElementById(\'sec-agents\').scrollIntoView()"><div class="v">' + (sum.agents || 0) + '</div><div class="l">measured subagents</div></div>';
+    o += '<div class="card measure" onclick="document.getElementById(\'sec-agents\').scrollIntoView()"><div class="v">' + (sum.sidechains || 0) + '</div><div class="l">measured sidechains</div></div>';
+    o += '<div class="' + multClass + '" onclick="document.getElementById(\'sec-data\').scrollIntoView()"><div class="v">' + (tt.transmissions || 0) + '</div><div class="l">' + (tokBasis ? 'API calls (reported)' : 'estimated API calls') + '</div></div>';
     o += '<div class="card measure" onclick="document.getElementById(\'sec-telemetry\').scrollIntoView()"><div class="v">' + (sum.telemetry || 0) + '</div><div class="l">telemetry rows on disk</div></div>';
+    o += '</div>';
+
+    o += '<div id="sec-procs"></div>';
+    var allProcs = (procs.processes || []);
+    o += '<h2 onclick="tog(this,\'procs\')">neo-mcp processes<span class="cnt">' + (procs.live_count || 0) + ' live' + (procs.version_skew ? ' · version skew' : '') + '</span></h2>';
+    o += '<div class="' + panelClass('procs') + '">';
+    o += sourceNote('measured', 'Every Claude Code session launches its own neo-mcp process; one owns ingest + the dashboard, the rest are followers. A follower auto-takes-over within ~20s if the owner dies. Code version is a fingerprint of neo\'s source as each process loaded it — differing versions mean a session is running stale code.');
+    if (allProcs.length === 0) {
+      o += emptyNote('no neo-mcp processes registered yet (registry populates on next session start)');
+    } else {
+      var procRows = [];
+      for (var i = 0; i < allProcs.length; i++) {
+        var p = allProcs[i];
+        var flags = [];
+        if (p.is_self) flags.push('self');
+        if (!p.alive) flags.push('dead');
+        if (p.code_skew) flags.push('stale-code');
+        if (p.stale_heartbeat) flags.push('stale-hb');
+        procRows.push([
+          p.pid,
+          esc(p.role || '?'),
+          '<code>' + esc(p.code_version || '?') + '</code>',
+          '<span title="' + esc(timeLabel(p.started_at)) + '">' + esc(relativeTime(p.started_at, parseTime(loadedAt) || new Date())) + '</span>',
+          flags.length ? esc(flags.join(', ')) : 'ok'
+        ]);
+      }
+      o += makeTable(['pid', 'role', 'code version', 'started', 'flags'], procRows, 'no processes');
+      o += '<div class="note">current code version: <code>' + esc(procs.current_code_version || '?') + '</code></div>';
+    }
     o += '</div>';
 
     o += '<div id="sec-data"></div>';
     o += '<h2 onclick="tog(this,\'data\')">data accounting<span class="cnt">' + (tt.total_data_mb || 0) + ' MB on disk</span></h2>';
     o += '<div class="' + panelClass('data') + '">';
-    o += sourceNote('estimated', 'This panel estimates hidden overhead from local transcript sizes and observed channel structure. It is useful for relative cost and volume, but it is not provider billing.');
+    if (tokBasis) {
+      o += sourceNote('measured', 'Multiplier and hidden % are computed from API-reported token usage in the transcripts. MB figures below are on-disk transcript bytes. No companion channel is fabricated. For billable totals use /usage in Claude Code.');
+    } else {
+      o += sourceNote('estimated', 'No token usage was found in the transcripts, so multiplier and hidden % fall back to on-disk byte sizes. No companion channel is fabricated. Use /usage in Claude Code for billing.');
+    }
     o += softError('data accounting', tokRaw);
     o += '<div style="display:flex;gap:16px;flex-wrap:wrap">';
     o += '<div class="stat"><div class="v" style="font-size:16px">' + (tt.visible_data_mb || 0) + ' MB</div><div class="stat-label">visible transcript bytes</div></div>';
-    o += '<div class="stat"><div class="v" style="font-size:16px;color:#d29922">' + (tt.hidden_data_mb || 0) + ' MB</div><div class="stat-label">estimated hidden bytes</div></div>';
-    o += '<div class="stat"><div class="v" style="font-size:16px">' + (tt.data_multiplier || 0) + 'x</div><div class="stat-label">estimated multiplier</div></div>';
-    o += '<div class="stat"><div class="v" style="font-size:16px">' + (tt.transmissions || 0) + '</div><div class="stat-label">estimated API calls</div></div>';
+    o += '<div class="stat"><div class="v" style="font-size:16px;color:#d29922">' + (tt.hidden_data_mb || 0) + ' MB</div><div class="stat-label">hidden channel bytes</div></div>';
+    o += '<div class="stat"><div class="v" style="font-size:16px">' + (tt.data_multiplier || 0) + 'x</div><div class="stat-label">' + estPfx + 'multiplier</div></div>';
+    o += '<div class="stat"><div class="v" style="font-size:16px">' + (tt.transmissions || 0) + '</div><div class="stat-label">' + (tokBasis ? 'API calls (reported)' : 'estimated API calls') + '</div></div>';
     o += '</div>';
+    if (tokBasis) {
+      var cachePct = tt.cache_read_pct || 0;
+      var freshPct = Math.max(0, Math.round((100 - cachePct) * 10) / 10);
+      o += '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:12px">';
+      o += '<div class="stat"><div class="v" style="font-size:16px">' + (tt.total_tokens || 0).toLocaleString() + '</div><div class="stat-label">total tokens</div></div>';
+      o += '<div class="stat"><div class="v" style="font-size:16px;color:#3fb950">' + (tt.fresh_tokens || 0).toLocaleString() + '</div><div class="stat-label">fresh tokens (computed)</div></div>';
+      o += '<div class="stat"><div class="v" style="font-size:16px;color:#58a6ff">' + (tt.cache_read_tokens || 0).toLocaleString() + '</div><div class="stat-label">cache-read tokens (' + cachePct + '%)</div></div>';
+      o += '</div>';
+      o += '<div style="display:flex;font-size:10px;margin-top:12px"><span style="color:#3fb950">fresh ' + freshPct + '%</span><span style="flex:1"></span><span style="color:#58a6ff">cache-read ' + cachePct + '%</span></div>';
+      o += '<div class="bar"><div class="bar-fill bar-green" style="width:' + freshPct + '%"></div><div class="bar-fill" style="background:#58a6ff;width:' + cachePct + '%;right:0;position:absolute"></div></div>';
+      o += '<div class="note">cache reads are re-sent context (billed ~0.1x), kept separate from fresh tokens so volume is not mistaken for new work. visible split: fresh ' + (tt.visible_fresh_tokens || 0).toLocaleString() + ' / cache ' + (tt.visible_cache_read_tokens || 0).toLocaleString() + ' · hidden split: fresh ' + (tt.hidden_fresh_tokens || 0).toLocaleString() + ' / cache ' + (tt.hidden_cache_read_tokens || 0).toLocaleString() + '</div>';
+    }
     o += '<div style="display:flex;font-size:10px;margin-top:12px"><span style="color:#3fb950">visible ' + visPct + '%</span><span style="flex:1"></span><span style="color:#f85149">hidden ' + hiddenPct + '%</span></div>';
     o += '<div class="bar"><div class="bar-fill bar-green" style="width:' + visPct + '%"></div><div class="bar-fill bar-red" style="width:' + hiddenPct + '%;right:0"></div></div>';
     o += '<div class="note">' + esc(tt.note || 'data volumes from local transcripts') + ' — use /usage in Claude Code for exact billable token numbers.</div>';
@@ -787,7 +853,7 @@ function loadAll() {
         var projectName = cleanProjectName(ss.project);
         var parsed = parseTime(ss.mtime);
         if (parsed && (loadedDate.getTime() - parsed.getTime()) <= 86400000) recent24h += 1;
-        if ((ss.compaction_count || 0) > 0) sessionsWithCompactions += 1;
+        if ((ss.compaction_events || 0) > 0) sessionsWithCompactions += 1;
         totalAgents += (ss.agent_count || 0);
         if (!projectRollup[projectName]) {
           projectRollup[projectName] = {
@@ -796,13 +862,15 @@ function loadAll() {
             last_active: ss.mtime || '',
             last_active_ts: parsed ? parsed.getTime() : 0,
             agents: 0,
+            sidechains: 0,
             compactions: 0
           };
         }
         var bucket = projectRollup[projectName];
         bucket.sessions += 1;
         bucket.agents += (ss.agent_count || 0);
-        bucket.compactions += (ss.compaction_count || 0);
+        bucket.sidechains += (ss.sidechain_count || 0);
+        bucket.compactions += (ss.compaction_events || 0);
         if (parsed && parsed.getTime() > bucket.last_active_ts) {
           bucket.last_active = ss.mtime || '';
           bucket.last_active_ts = parsed.getTime();
@@ -815,7 +883,12 @@ function loadAll() {
       o += '<div class="stat"><div class="v" style="font-size:16px">' + Object.keys(projectRollup).length + '</div><div class="stat-label">active projects</div></div>';
       o += '<div class="stat"><div class="v" style="font-size:16px">' + sessionsWithCompactions + '</div><div class="stat-label">sessions with compactions</div></div>';
       o += '<div class="stat"><div class="v" style="font-size:16px">' + avgAgents + '</div><div class="stat-label">avg agent logs per session</div></div>';
+      var compTotal = sum.compactions || 0;
+      var compAttr = (sum.compactions_attributed != null) ? sum.compactions_attributed : compTotal;
+      var compUnattr = Math.max(0, compTotal - compAttr);
+      o += '<div class="stat"><div class="v" style="font-size:16px">' + compTotal + '</div><div class="stat-label">compaction events (' + compAttr + ' attributed' + (compUnattr ? ', ' + compUnattr + ' unattributed' : '') + ')</div></div>';
       o += '</div>';
+      if (compUnattr) o += '<div class="note">' + compUnattr + ' compaction event(s) reference a session with no local transcript (compaction spawned a new session, or the transcript was pruned) — counted in the total but not attributed to a row below.</div>';
       o += '<div class="note"><span class="pill">projects</span>Grouped by project and sorted by most recent session activity.</div>';
 
       var projectRows = Object.keys(projectRollup).map(function(key) { return projectRollup[key]; }).sort(function(a, b) {
@@ -831,10 +904,11 @@ function loadAll() {
           pr.sessions,
           '<span title="' + esc(timeLabel(pr.last_active)) + '">' + esc(relativeTime(pr.last_active, loadedDate)) + '</span>',
           pr.agents,
+          pr.sidechains,
           pr.compactions
         ]);
       }
-      o += makeTable(['project', 'sessions', 'last active', 'agents', 'compactions'], pRows, 'no project rollup available yet');
+      o += makeTable(['project', 'sessions', 'last active', 'agents', 'sidechains', 'compactions'], pRows, 'no project rollup available yet');
 
       o += '<div class="note"><span class="pill">recent</span>Most recent sessions across all projects, sorted by last local activity.</div>';
       var srows = [];
@@ -845,15 +919,16 @@ function loadAll() {
           esc(cleanProjectName(ss.project)),
           '<code>' + esc((ss.session_id || '').slice(0,8)) + '</code>',
           ss.agent_count || 0,
-          ss.compaction_count || 0
+          ss.sidechain_count || 0,
+          ss.compaction_events || 0
         ]);
       }
-      o += makeTable(['last active', 'project', 'session', 'agents', 'compactions'], srows, 'no recent sessions available');
+      o += makeTable(['last active', 'project', 'session', 'agents', 'sidechains', 'compactions'], srows, 'no recent sessions available');
     }
     o += '</div>';
 
     o += '<div id="sec-agents"></div>';
-    o += '<h2 onclick="tog(this,\'agents\')">agents & compactions<span class="cnt">' + ((sum.agents || 0) + (sum.compactions || 0)) + ' total, ' + agents.length + ' recent shown</span></h2>';
+    o += '<h2 onclick="tog(this,\'agents\')">agents & compactions<span class="cnt">' + ((sum.agents || 0) + (sum.sidechains || 0) + (sum.compactions || 0)) + ' total, ' + agents.length + ' recent shown</span></h2>';
     o += '<div class="' + panelClass('agents') + '">';
     o += sourceNote('measured', 'This panel shows the most recent local subagent and compaction transcript files. Project rollups below are based on the recent window shown here, not the full historical inventory.');
     o += softError('agents', agentsRaw);
@@ -870,12 +945,16 @@ function loadAll() {
       });
       var loadedDate = parseTime(loadedAt) || new Date();
       var shownCompactions = 0;
+      var shownSidechains = 0;
+      var shownSubagents = 0;
       var shownMessages = 0;
       var shownBytes = 0;
       var recentProjects = {};
       for (var i = 0; i < sortedAgents.length; i++) {
         var a = sortedAgents[i];
         if (a.is_compaction) shownCompactions += 1;
+        else if (a.is_sidechain) shownSidechains += 1;
+        else shownSubagents += 1;
         shownMessages += (a.message_count || 0);
         shownBytes += (a.size_bytes || 0);
         var projectName = cleanProjectName(a.project);
@@ -885,6 +964,7 @@ function loadAll() {
             project: projectName,
             logs: 0,
             compactions: 0,
+            sidechains: 0,
             messages: 0,
             bytes: 0,
             last_active: a.mtime || '',
@@ -894,6 +974,7 @@ function loadAll() {
         var bucket = recentProjects[projectName];
         bucket.logs += 1;
         bucket.compactions += a.is_compaction ? 1 : 0;
+        bucket.sidechains += a.is_sidechain ? 1 : 0;
         bucket.messages += (a.message_count || 0);
         bucket.bytes += (a.size_bytes || 0);
         if (parsed && parsed.getTime() > bucket.last_active_ts) {
@@ -903,8 +984,9 @@ function loadAll() {
       }
 
       o += '<div style="display:flex;gap:16px;flex-wrap:wrap">';
-      o += '<div class="stat"><div class="v" style="font-size:16px">' + (sortedAgents.length - shownCompactions) + '</div><div class="stat-label">recent subagent logs</div></div>';
-      o += '<div class="stat"><div class="v" style="font-size:16px">' + shownCompactions + '</div><div class="stat-label">recent compactions</div></div>';
+      o += '<div class="stat"><div class="v" style="font-size:16px">' + shownSubagents + '</div><div class="stat-label">recent subagents</div></div>';
+      o += '<div class="stat"><div class="v" style="font-size:16px;color:#d29922">' + shownSidechains + '</div><div class="stat-label">recent sidechains</div></div>';
+      o += '<div class="stat"><div class="v" style="font-size:16px">' + shownCompactions + '</div><div class="stat-label">recent compaction transcripts</div></div>';
       o += '<div class="stat"><div class="v" style="font-size:16px">' + shownMessages + '</div><div class="stat-label">messages in recent window</div></div>';
       o += '<div class="stat"><div class="v" style="font-size:16px">' + Math.round(shownBytes / 1024 / 1024 * 10) / 10 + ' MB</div><div class="stat-label">recent transcript bytes</div></div>';
       o += '</div>';
@@ -921,19 +1003,20 @@ function loadAll() {
         pRows.push([
           esc(pr.project),
           pr.logs,
+          pr.sidechains,
           pr.compactions,
           pr.messages,
           '<span title="' + esc(timeLabel(pr.last_active)) + '">' + esc(relativeTime(pr.last_active, loadedDate)) + '</span>'
         ]);
       }
-      o += makeTable(['project', 'logs', 'compactions', 'messages', 'last active'], pRows, 'no recent project activity yet');
+      o += makeTable(['project', 'logs', 'sidechains', 'compactions', 'messages', 'last active'], pRows, 'no recent project activity yet');
 
       o += '<div class="note"><span class="pill">recent</span>Latest local agent and compaction transcript files. Click any row to inspect the stored conversation excerpt.</div>';
       for (var i = 0; i < Math.min(sortedAgents.length, 60); i++) {
         var a = sortedAgents[i];
-        var acls = a.is_compaction ? ' item-head-warn' : '';
-        var alabel = a.is_compaction ? 'compaction' : 'agent';
-        var aborder = a.is_compaction ? 'border-color:#d29922' : '';
+        var acls = (a.is_compaction || a.is_sidechain) ? ' item-head-warn' : '';
+        var alabel = a.is_compaction ? 'compaction' : (a.is_sidechain ? 'sidechain' : 'agent');
+        var aborder = (a.is_compaction || a.is_sidechain) ? 'border-color:#d29922' : '';
         var kb = Math.round((a.size_bytes || 0) / 1024);
         var bodyId = 'ag-' + a.id;
         var rel = relativeTime(a.mtime, loadedDate);
@@ -1350,6 +1433,10 @@ function loadAll() {
     headerBits.push('latest session activity ' + timeLabel(sum.latest_session_mtime));
     headerBits.push('db: ~/.neo/neo.db');
     document.getElementById('gen').textContent = headerBits.join(' — ');
+  }).catch(function(err) {
+    app.innerHTML = '<div class="note">failed to render dashboard: ' + esc(err && err.message ? err.message : String(err)) + '</div>';
+    document.getElementById('gen').textContent = 'render error';
+    if (window.console && console.error) console.error('dashboard render failed', err);
   });
 }
 

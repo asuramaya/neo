@@ -18,20 +18,23 @@ tagged.
 
 from __future__ import annotations
 
+import atexit
 import fcntl
 import json
 import os
+import socket
 import sys
 import threading
 import time
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from . import db
 from . import states
 from . import tokens
-from .app import get_setup_status, serve as _serve_dashboard, sync_installed_probe
+from .app import code_fingerprint, get_setup_status, serve as _serve_dashboard, sync_installed_probe
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "neo"
@@ -39,6 +42,11 @@ SERVER_VERSION = "0.1.0"
 DASHBOARD_PORT = 7777
 # Periodic re-ingest interval for the dashboard-owner process.
 INGEST_INTERVAL_SEC = 30
+# How often each process refreshes its registry heartbeat, and how often a
+# follower retries to claim the owner role (so a dead owner is replaced without
+# a manual reconnect). Also the staleness window for the registry.
+HEARTBEAT_SEC = 30
+OWNER_RETRY_SEC = 20
 # Filesystem lock that ensures only one neo-mcp process per host runs the
 # heavy ingest + dashboard. Released automatically by the kernel when the
 # owning process exits, so a follower picks up the role on the next startup.
@@ -53,6 +61,58 @@ SELF_FILTER_SQL = "(source IS NULL OR source != 'neo_mcp_call')"
 _dashboard_started = False
 _dashboard_lock = threading.Lock()
 _owner_lock_handle = None  # kept open for the lifetime of the owning process
+_self_role = "follower"    # updated to "owner" if/when this process claims the role
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _register_self(role: str) -> None:
+    global _self_role
+    _self_role = role
+    try:
+        db.upsert_process(os.getpid(), role, code_fingerprint(), _START_TIME, _now_iso(), socket.gethostname())
+    except Exception:
+        traceback.print_exc(file=sys.stderr)
+
+
+def _deregister_self() -> None:
+    try:
+        db.delete_process(os.getpid())
+    except Exception:
+        pass
+
+
+def _heartbeat_loop() -> None:
+    while True:
+        time.sleep(HEARTBEAT_SEC)
+        try:
+            db.upsert_process(os.getpid(), _self_role, code_fingerprint(), _START_TIME, _now_iso(), socket.gethostname())
+        except Exception:
+            pass
+
+
+def _prune_dead_processes() -> None:
+    """Owner duty: drop registry rows for processes that are gone."""
+    try:
+        for proc in db.list_processes():
+            pid = proc.get("pid")
+            if pid is None or pid == os.getpid():
+                continue
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                db.delete_process(pid)
+            except PermissionError:
+                pass  # alive, owned by another user
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
+_START_TIME = _now_iso()
 
 
 def _env_enabled(name: str, default: bool = True) -> bool:
@@ -90,6 +150,43 @@ def _periodic_ingest() -> None:
             db.ingest_all()
         except Exception:
             traceback.print_exc(file=sys.stderr)
+        _prune_dead_processes()
+
+
+def _promotion_loop() -> None:
+    """Follower duty: keep trying to claim the owner role.
+
+    When the current owner dies its fcntl lock is released by the kernel, so a
+    follower picks up the dashboard + ingest within OWNER_RETRY_SEC — no manual
+    reconnect needed even with many Claude sessions open.
+    """
+    while True:
+        time.sleep(OWNER_RETRY_SEC)
+        if _try_acquire_owner_role():
+            _register_self("owner")
+            _run_owner_duties()
+            return
+
+
+def _run_owner_duties() -> None:
+    try:
+        sync_installed_probe()
+    except Exception:
+        traceback.print_exc(file=sys.stderr)
+
+    if _env_enabled(ENV_PERIODIC, default=True):
+        # Initial ingest is incremental — cheap when nothing changed. Run it
+        # in its own thread so initialize() isn't blocked on the cold path.
+        threading.Thread(target=_initial_ingest, daemon=True, name="neo-initial-ingest").start()
+        threading.Thread(target=_periodic_ingest, daemon=True, name="neo-periodic-ingest").start()
+
+    if _env_enabled(ENV_DASHBOARD, default=True):
+        threading.Thread(
+            target=_serve_dashboard,
+            args=(DASHBOARD_PORT, False),
+            daemon=True,
+            name="neo-dashboard",
+        ).start()
 
 
 def _start_dashboard() -> None:
@@ -99,42 +196,19 @@ def _start_dashboard() -> None:
             return
         _dashboard_started = True
 
-    if not _try_acquire_owner_role():
-        # Another neo-mcp on this host already owns ingest + dashboard.
-        # As a follower we still serve MCP tool calls against the shared
-        # SQLite DB, but we do no ingest and bind no ports — so spawning
-        # extra Claude sessions no longer multiplies CPU.
-        return
+    is_owner = _try_acquire_owner_role()
+    # Register in the live-process registry and heartbeat, so neo can account
+    # for every Claude session's neo-mcp process and flag version skew.
+    _register_self("owner" if is_owner else "follower")
+    atexit.register(_deregister_self)
+    threading.Thread(target=_heartbeat_loop, daemon=True, name="neo-heartbeat").start()
 
-    try:
-        sync_installed_probe()
-    except Exception:
-        traceback.print_exc(file=sys.stderr)
-
-    periodic_enabled = _env_enabled(ENV_PERIODIC, default=True)
-    dashboard_enabled = _env_enabled(ENV_DASHBOARD, default=True)
-
-    if periodic_enabled:
-        # Initial ingest is incremental — cheap when nothing changed. Run it
-        # in its own thread so initialize() isn't blocked on the cold path.
-        threading.Thread(
-            target=_initial_ingest,
-            daemon=True,
-            name="neo-initial-ingest",
-        ).start()
-        threading.Thread(
-            target=_periodic_ingest,
-            daemon=True,
-            name="neo-periodic-ingest",
-        ).start()
-
-    if dashboard_enabled:
-        threading.Thread(
-            target=_serve_dashboard,
-            args=(DASHBOARD_PORT, False),
-            daemon=True,
-            name="neo-dashboard",
-        ).start()
+    if is_owner:
+        _run_owner_duties()
+    else:
+        # Follower: serve MCP tool calls against the shared DB, do no ingest and
+        # bind no ports, but watch for the owner dying so we can take over.
+        threading.Thread(target=_promotion_loop, daemon=True, name="neo-promotion").start()
 
 
 def _initial_ingest() -> None:
@@ -187,6 +261,7 @@ def _text_result(payload: Any) -> dict:
 
 
 def tool_status(_args: dict) -> Any:
+    # get_setup_status() already includes the live-process registry + skew flags.
     return get_setup_status()
 
 
@@ -223,16 +298,21 @@ def tool_query_sessions(args: dict) -> Any:
     limit = _int(args.get("limit"), 100, minimum=1, maximum=500)
     project = args.get("project")
     if project:
-        return db.query(
-            "SELECT project, session_id, mtime, agent_count, compaction_count "
+        rows = db.query(
+            "SELECT project, session_id, mtime, agent_count, sidechain_count, compaction_count "
             "FROM sessions WHERE project = ? ORDER BY mtime DESC LIMIT ?",
             (project, limit),
         )
-    return db.query(
-        "SELECT project, session_id, mtime, agent_count, compaction_count "
-        "FROM sessions ORDER BY mtime DESC LIMIT ?",
-        (limit,),
-    )
+    else:
+        rows = db.query(
+            "SELECT project, session_id, mtime, agent_count, sidechain_count, compaction_count "
+            "FROM sessions ORDER BY mtime DESC LIMIT ?",
+            (limit,),
+        )
+    comp_events = db.compaction_events_by_session()
+    for row in rows:
+        row["compaction_events"] = comp_events.get(row.get("session_id"), 0)
+    return rows
 
 
 def tool_query_agents(args: dict) -> Any:
@@ -243,7 +323,7 @@ def tool_query_agents(args: dict) -> Any:
     if expand_id:
         agent_id = _int(expand_id, 0, minimum=1, maximum=10_000_000)
         meta = db.query(
-            "SELECT id, project, session_id, file_name, is_compaction, mtime, "
+            "SELECT id, project, session_id, file_name, is_compaction, is_sidechain, mtime, "
             "size_bytes, message_count FROM agents WHERE id = ?",
             (agent_id,),
         )
@@ -264,7 +344,7 @@ def tool_query_agents(args: dict) -> Any:
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     params.append(limit)
     return db.query(
-        f"SELECT id, project, session_id, file_name, is_compaction, mtime, size_bytes, message_count "
+        f"SELECT id, project, session_id, file_name, is_compaction, is_sidechain, mtime, size_bytes, message_count "
         f"FROM agents{where} ORDER BY mtime DESC LIMIT ?",
         tuple(params),
     )
@@ -365,7 +445,8 @@ def tool_correlations(args: dict) -> Any:
     agents_per_project = db.query(
         "SELECT project, COUNT(*) AS total, "
         "SUM(CASE WHEN is_compaction=1 THEN 1 ELSE 0 END) AS compactions, "
-        "SUM(CASE WHEN is_compaction=0 THEN 1 ELSE 0 END) AS agents, "
+        "SUM(CASE WHEN is_sidechain=1 THEN 1 ELSE 0 END) AS sidechains, "
+        "SUM(CASE WHEN is_compaction=0 AND is_sidechain=0 THEN 1 ELSE 0 END) AS agents, "
         "SUM(message_count) AS total_messages "
         "FROM agents GROUP BY project ORDER BY total DESC LIMIT ?",
         (project_limit,),
@@ -389,7 +470,9 @@ TOOLS: dict[str, dict] = {
     "status": {
         "description": (
             "Setup health: whether ~/.claude/settings.json exists, neo's probe is "
-            "installed, and how many hook commands are wired."
+            "installed, how many hook commands are wired, plus the live neo-mcp "
+            "process registry across Claude sessions (roles, code versions, and a "
+            "version_skew flag when sessions run mismatched code)."
         ),
         "schema": {"type": "object", "properties": {}, "additionalProperties": False},
         "fn": tool_status,
@@ -415,10 +498,12 @@ TOOLS: dict[str, dict] = {
     },
     "data_accounting": {
         "description": (
-            "Visible vs hidden data ratios estimated from local transcript file "
-            "sizes and channel structure. Includes per-session breakdown, hidden %, "
-            "data multiplier, and estimated transmission count. NOT real token "
-            "counts — for those, run /usage in Claude Code."
+            "Visible (primary) vs hidden (subagent/sidechain/compaction) accounting. "
+            "Hidden %, data multiplier, and API-call count are computed from "
+            "API-reported token usage in the transcripts when present (basis field = "
+            "'tokens'), falling back to on-disk byte sizes otherwise. Also reports "
+            "visible/hidden/cache-read token totals and per-session breakdown. No "
+            "companion channel is fabricated. For billable totals, run /usage in Claude Code."
         ),
         "schema": {"type": "object", "properties": {}, "additionalProperties": False},
         "fn": tool_data_accounting,
@@ -550,8 +635,9 @@ TOOLS: dict[str, dict] = {
     "tokens_report": {
         "description": (
             "Compact totals from data_accounting — sessions analyzed, visible/hidden "
-            "MB, multiplier, hidden %, transmissions, system reminders, sidechain / "
-            "subagent / compaction counts."
+            "MB and tokens, cache-read tokens, multiplier, hidden %, API calls, "
+            "system reminders, sidechain / subagent / compaction counts, and basis "
+            "(tokens vs file_size_estimate)."
         ),
         "schema": {"type": "object", "properties": {}, "additionalProperties": False},
         "fn": tool_tokens_report,
@@ -671,8 +757,47 @@ def serve() -> None:
             _send(response)
 
 
+def run_http_daemon(port: int = DASHBOARD_PORT) -> None:
+    """Single shared daemon: serves the dashboard AND the MCP protocol over HTTP
+    for every Claude Code session, so there is exactly one neo process per host.
+
+    Claude sessions connect to http://127.0.0.1:<port>/mcp instead of spawning a
+    stdio subprocess each, which eliminates the per-session process fan-out and
+    the version skew that comes with it.
+    """
+    global _dashboard_started
+    if not _try_acquire_owner_role():
+        # Another neo process transiently holds the lock (e.g. a not-yet-restarted
+        # stdio session). Exit non-zero so systemd's Restart=on-failure keeps
+        # retrying until that process dies and we can become the sole owner.
+        print("neo: owner lock held by another neo process; will retry.", file=sys.stderr)
+        raise SystemExit(1)
+    # The dashboard + ingest are started here directly, so a client's initialize
+    # must not also try to start them.
+    _dashboard_started = True
+    _register_self("owner")
+    atexit.register(_deregister_self)
+    threading.Thread(target=_heartbeat_loop, daemon=True, name="neo-heartbeat").start()
+
+    try:
+        sync_installed_probe()
+    except Exception:
+        traceback.print_exc(file=sys.stderr)
+
+    if _env_enabled(ENV_PERIODIC, default=True):
+        threading.Thread(target=_initial_ingest, daemon=True, name="neo-initial-ingest").start()
+        threading.Thread(target=_periodic_ingest, daemon=True, name="neo-periodic-ingest").start()
+
+    # Blocks serving HTTP (dashboard + /mcp) until the process is stopped.
+    _serve_dashboard(port, False)
+
+
 def main() -> None:
-    serve()
+    argv = sys.argv[1:]
+    if "--http" in argv or "--serve" in argv:
+        run_http_daemon()
+    else:
+        serve()
 
 
 if __name__ == "__main__":

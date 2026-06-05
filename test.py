@@ -406,6 +406,39 @@ with tempfile.TemporaryDirectory() as tmpdir:
     stats = tokens.analyze_session_file(transcript)
     check("token accounting parses reminder payloads", stats["system_reminders"] == 2)
 
+# cache is first-class: fresh/cache-read tracked separately and never bundled.
+def _astats(inp=0, cc=0, cr=0, out=0):
+    return {"file_size_bytes": 0, "messages": 0, "system_reminders": 0, "model": "m",
+            "reported_input_tokens": inp, "reported_cache_creation_tokens": cc,
+            "reported_cache_read_tokens": cr, "reported_output_tokens": out,
+            "api_calls_with_usage": 1}
+
+_m = tokens.compute_session({
+    "primary": _astats(inp=100, cc=20, cr=800, out=30),
+    "subagents": [],
+    "sidechains": [_astats(inp=10, cc=0, cr=200, out=5)],
+    "compactions": [],
+})
+check("tokens: fresh + cache_read == total", _m["fresh_tokens"] + _m["cache_read_tokens"] == _m["total_tokens"])
+check("tokens: cache reads not folded into fresh", _m["cache_read_tokens"] == 1000 and _m["fresh_tokens"] == 165)
+check("tokens: basis is tokens when usage present", _m["basis"] == "tokens" and _m["has_real_usage"])
+
+# agent-file classification mirrors db (sidechain checked before compaction).
+import tempfile as _tf
+with _tf.TemporaryDirectory() as _d:
+    from neo import db as _dbmod
+    p = Path(_d) / "x.jsonl"
+    write_jsonl(p, [{"isSidechain": True}])
+    check("db classifies sidechain transcripts", _dbmod._classify_agent_file(p) == "sidechain")
+    p2 = Path(_d) / "y.jsonl"
+    write_jsonl(p2, [{"isCompaction": True}])
+    check("db classifies compaction transcripts", _dbmod._classify_agent_file(p2) == "compaction")
+
+# shared code fingerprint + mcp token are well-formed (single-daemon HTTP transport).
+from neo import app as _appmod
+check("code fingerprint is versioned + hashed", "+" in _appmod.code_fingerprint())
+check("mcp token is a non-empty secret", len(_appmod.mcp_token()) >= 32)
+
 print("\nharness_probe.py")
 from neo import harness_probe
 
@@ -413,10 +446,8 @@ with tempfile.TemporaryDirectory() as tmpdir:
     root = Path(tmpdir)
     old_log_dir = harness_probe.LOG_DIR
     old_log_file = harness_probe.LOG_FILE
-    old_db_file = harness_probe.DB_FILE
     harness_probe.LOG_DIR = root / ".neo"
     harness_probe.LOG_FILE = harness_probe.LOG_DIR / "harness_log.jsonl"
-    harness_probe.DB_FILE = harness_probe.LOG_DIR / "neo.db"
     old_stdin = sys.stdin
     try:
         sys.stdin = io.StringIO("not json at all{{{")
@@ -426,10 +457,9 @@ with tempfile.TemporaryDirectory() as tmpdir:
         sys.stdin = old_stdin
         harness_probe.LOG_DIR = old_log_dir
         harness_probe.LOG_FILE = old_log_file
-        harness_probe.DB_FILE = old_db_file
 
 print("\ndashboard.html")
-dash_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
+dash_path = os.path.join(os.path.dirname(__file__), "src", "neo", "dashboard.html")
 with open(dash_path, encoding="utf-8") as fh:
     content = fh.read()
 check("dashboard exists", os.path.exists(dash_path))
@@ -443,7 +473,7 @@ check("dashboard uses red measured accents", ".measure{border-color:#f85149}" in
 check("dashboard moves device into header line", "device ' + sum.device" in content and "latest session activity" in content)
 check("dashboard persists panel preferences", "localStorage.getItem('neo.panels')" in content and "panelClass(" in content)
 check("dashboard organizes sessions panel", "active in last 24h" in content and "<span class=\"pill\">recent</span>Most recent sessions" in content)
-check("dashboard organizes agents panel", "recent subagent logs" in content and "<span class=\"pill\">projects</span>Recent agent activity" in content)
+check("dashboard organizes agents panel", "recent subagents" in content and "recent sidechains" in content and "<span class=\"pill\">projects</span>Recent agent activity" in content)
 check("dashboard organizes memory panel", "memory index files" in content and "<span class=\"pill\">files</span>Click any file" in content)
 check("dashboard organizes probe panel", "event types in shown window" in content and "<span class=\"pill\">types</span>Event type counts in the current probe window." in content)
 check("dashboard organizes telemetry panel", "retained event types" in content and "<span class=\"pill\">recent</span>Latest retained telemetry rows" in content)
