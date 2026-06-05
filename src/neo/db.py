@@ -188,9 +188,22 @@ def _read_first_jsonl_entry(path: Path) -> dict:
     return {}
 
 
-def _is_compaction_file(path: Path) -> bool:
+def _classify_agent_file(path: Path) -> str:
+    """Classify a subagents/ transcript: 'sidechain', 'compaction', or 'agent'.
+
+    Mirrors neo.tokens._classify_subagent so the DB and token accounting agree
+    on what each file is (sidechain checked first, then compaction).
+    """
     entry = _read_first_jsonl_entry(path)
-    return entry.get("isCompaction") is True or "compact" in path.name
+    if entry.get("isSidechain") is True:
+        return "sidechain"
+    if entry.get("isCompaction") is True or "compact" in path.name:
+        return "compaction"
+    return "agent"
+
+
+def _is_compaction_file(path: Path) -> bool:
+    return _classify_agent_file(path) == "compaction"
 
 
 def _extract_system_reminder_text(text: str) -> str | None:
@@ -270,6 +283,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             session_id TEXT,
             mtime TEXT,
             agent_count INTEGER DEFAULT 0,
+            sidechain_count INTEGER DEFAULT 0,
             compaction_count INTEGER DEFAULT 0,
             UNIQUE(project, session_id)
         );
@@ -280,6 +294,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             session_id TEXT,
             file_name TEXT,
             is_compaction INTEGER DEFAULT 0,
+            is_sidechain INTEGER DEFAULT 0,
             mtime TEXT,
             size_bytes INTEGER,
             message_count INTEGER DEFAULT 0,
@@ -335,6 +350,15 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             value TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS processes (
+            pid INTEGER PRIMARY KEY,
+            role TEXT,
+            code_version TEXT,
+            started_at TEXT,
+            last_seen TEXT,
+            host TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS ingest_file_state (
             source TEXT,
             path TEXT,
@@ -359,6 +383,14 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         pass
     try:
         conn.execute("ALTER TABLE tasks ADD COLUMN source_path TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE agents ADD COLUMN is_sidechain INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE sessions ADD COLUMN sidechain_count INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
     _commit_and_harden(conn)
@@ -488,33 +520,35 @@ def ingest_telemetry(conn: sqlite3.Connection) -> int:
     return count
 
 
-def _upsert_session(conn: sqlite3.Connection, project: str, session_id: str, mtime: str, agent_count: int, compaction_count: int) -> None:
+def _upsert_session(conn: sqlite3.Connection, project: str, session_id: str, mtime: str, agent_count: int, sidechain_count: int, compaction_count: int) -> None:
     conn.execute(
         """
-        INSERT INTO sessions (project, session_id, mtime, agent_count, compaction_count)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO sessions (project, session_id, mtime, agent_count, sidechain_count, compaction_count)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(project, session_id)
         DO UPDATE SET
             mtime = excluded.mtime,
             agent_count = excluded.agent_count,
+            sidechain_count = excluded.sidechain_count,
             compaction_count = excluded.compaction_count
         """,
-        (project, session_id, mtime, agent_count, compaction_count),
+        (project, session_id, mtime, agent_count, sidechain_count, compaction_count),
     )
 
 
-def _upsert_agent(conn: sqlite3.Connection, project: str, session_id: str, file_name: str, is_compaction: int, mtime: str, size_bytes: int) -> int:
+def _upsert_agent(conn: sqlite3.Connection, project: str, session_id: str, file_name: str, is_compaction: int, is_sidechain: int, mtime: str, size_bytes: int) -> int:
     conn.execute(
         """
-        INSERT INTO agents (project, session_id, file_name, is_compaction, mtime, size_bytes)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO agents (project, session_id, file_name, is_compaction, is_sidechain, mtime, size_bytes)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(project, session_id, file_name)
         DO UPDATE SET
             is_compaction = excluded.is_compaction,
+            is_sidechain = excluded.is_sidechain,
             mtime = excluded.mtime,
             size_bytes = excluded.size_bytes
         """,
-        (project, session_id, file_name, is_compaction, mtime, size_bytes),
+        (project, session_id, file_name, is_compaction, is_sidechain, mtime, size_bytes),
     )
     row = conn.execute(
         "SELECT id FROM agents WHERE project=? AND session_id=? AND file_name=?",
@@ -643,9 +677,13 @@ def ingest_sessions(conn: sqlite3.Connection) -> int:
                     path for path in _iter_safe_entries(sa_dir)
                     if _is_safe_regular_file(path) and path.suffix == ".jsonl"
                 ]
-            compaction_flags = {p: _is_compaction_file(p) for p in agent_files}
-            compact_count = sum(1 for v in compaction_flags.values() if v)
-            regular_count = len(agent_files) - compact_count
+            kinds = {p: _classify_agent_file(p) for p in agent_files}
+            compaction_flags = {p: kinds[p] == "compaction" for p in agent_files}
+            sidechain_flags = {p: kinds[p] == "sidechain" for p in agent_files}
+            compact_count = sum(1 for v in kinds.values() if v == "compaction")
+            sidechain_count = sum(1 for v in kinds.values() if v == "sidechain")
+            # "agent_count" tracks real subagents (excludes sidechains/compactions).
+            regular_count = len(agent_files) - compact_count - sidechain_count
 
             try:
                 session_mtime = datetime.fromtimestamp(session.stat().st_mtime).isoformat()
@@ -658,6 +696,7 @@ def ingest_sessions(conn: sqlite3.Connection) -> int:
                 session_id,
                 session_mtime,
                 regular_count,
+                sidechain_count,
                 compact_count,
             )
 
@@ -670,6 +709,9 @@ def ingest_sessions(conn: sqlite3.Connection) -> int:
                 except OSError:
                     continue
 
+                is_compact = 1 if compaction_flags[transcript] else 0
+                is_side = 1 if sidechain_flags[transcript] else 0
+
                 existing = conn.execute(
                     "SELECT id, mtime, size_bytes FROM agents "
                     "WHERE project=? AND session_id=? AND file_name=?",
@@ -680,15 +722,21 @@ def ingest_sessions(conn: sqlite3.Connection) -> int:
                     and existing["mtime"] == mtime
                     and existing["size_bytes"] == size_bytes
                 ):
+                    # File unchanged: skip the expensive message reload, but keep
+                    # the classification flags current (cheap; backfills old rows).
+                    conn.execute(
+                        "UPDATE agents SET is_compaction=?, is_sidechain=? WHERE id=?",
+                        (is_compact, is_side, int(existing["id"])),
+                    )
                     continue
 
-                is_compact = 1 if compaction_flags[transcript] else 0
                 agent_id = _upsert_agent(
                     conn,
                     project_name,
                     session_id,
                     transcript.name,
                     is_compact,
+                    is_side,
                     mtime,
                     size_bytes,
                 )
@@ -925,6 +973,81 @@ def query(sql: str, params: Iterable = ()) -> list[dict]:
         conn.close()
 
 
+def compaction_events_by_session() -> dict[str, int]:
+    """Count post_compact hook events per session_id.
+
+    Compactions are recorded as hook events (which carry session_id), not as
+    transcript files, so this is the real per-session compaction count. Some
+    events carry a session_id with no matching local transcript (e.g. the
+    compaction spawned a new session, or the transcript was pruned); those are
+    surfaced as unattributed via summary(), not silently dropped.
+    """
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT json_extract(data_json, '$.session_id') AS sid, COUNT(*) AS c "
+            "FROM hook_events WHERE event_type='post_compact' GROUP BY sid"
+        ).fetchall()
+        return {row[0]: row[1] for row in rows if row[0]}
+    except sqlite3.OperationalError:
+        # json_extract unavailable — fall back to no per-session attribution.
+        return {}
+    finally:
+        conn.close()
+
+
+def upsert_process(pid: int, role: str, code_version: str, started_at: str, last_seen: str, host: str) -> None:
+    """Register/refresh a neo-mcp process in the live-process registry."""
+    conn = get_db()
+    try:
+        conn.execute(
+            """
+            INSERT INTO processes (pid, role, code_version, started_at, last_seen, host)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(pid) DO UPDATE SET
+                role = excluded.role,
+                code_version = excluded.code_version,
+                last_seen = excluded.last_seen,
+                host = excluded.host
+            """,
+            (pid, role, code_version, started_at, last_seen, host),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_process(pid: int) -> None:
+    conn = get_db()
+    try:
+        conn.execute("DELETE FROM processes WHERE pid=?", (pid,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_processes() -> list[dict]:
+    conn = get_db()
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT pid, role, code_version, started_at, last_seen, host FROM processes ORDER BY started_at"
+        ).fetchall()]
+    finally:
+        conn.close()
+
+
+def _count_attributed_compactions(conn: sqlite3.Connection) -> int:
+    """post_compact events whose session_id matches a known local session."""
+    try:
+        return conn.execute(
+            "SELECT COUNT(*) FROM hook_events "
+            "WHERE event_type='post_compact' "
+            "AND json_extract(data_json, '$.session_id') IN (SELECT session_id FROM sessions)"
+        ).fetchone()[0]
+    except sqlite3.OperationalError:
+        return 0
+
+
 def summary() -> dict:
     conn = get_db()
     try:
@@ -939,8 +1062,10 @@ def summary() -> dict:
         return {
             "telemetry": conn.execute("SELECT COUNT(*) FROM telemetry").fetchone()[0],
             "sessions": conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0],
-            "agents": conn.execute("SELECT COUNT(*) FROM agents WHERE is_compaction=0").fetchone()[0],
+            "agents": conn.execute("SELECT COUNT(*) FROM agents WHERE is_compaction=0 AND is_sidechain=0").fetchone()[0],
+            "sidechains": conn.execute("SELECT COUNT(*) FROM agents WHERE is_sidechain=1").fetchone()[0],
             "compactions": conn.execute("SELECT COUNT(*) FROM hook_events WHERE event_type='post_compact'").fetchone()[0],
+            "compactions_attributed": _count_attributed_compactions(conn),
             "messages": conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0],
             "memory_files": conn.execute("SELECT COUNT(*) FROM memory_files").fetchone()[0],
             "hook_events": conn.execute("SELECT COUNT(*) FROM hook_events").fetchone()[0],

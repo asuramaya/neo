@@ -104,8 +104,8 @@ The MCP server filters its own traffic out of hook queries by default
 
 neo labels its claims on purpose:
 
-- **measured** — reminder rows, sessions, agents, tasks, memory files, telemetry rows, hook events
-- **estimated** — hidden-context share, data multiplier, approximate API transmission counts
+- **measured** — reminder rows, sessions, agents, tasks, memory files, telemetry rows, hook events; hidden-context share, data multiplier, and API call counts when transcripts carry API-reported token usage
+- **estimated** — hidden-context share and data multiplier *only* when no token usage is recorded, where they fall back to on-disk transcript byte sizes
 - **inferred** — state-model labels and anomaly interpretation from local timing + lifecycle patterns
 
 For exact billable token numbers, use `/usage` inside Claude Code. neo does not
