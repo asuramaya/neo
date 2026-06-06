@@ -34,11 +34,13 @@ from typing import Any, Callable
 from . import db
 from . import states
 from . import tokens
-from .app import code_fingerprint, get_setup_status, serve as _serve_dashboard, sync_installed_probe
+from .app import NEO_VERSION, code_fingerprint, get_setup_status, serve as _serve_dashboard, sync_installed_probe
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "neo"
-SERVER_VERSION = "0.1.0"
+# Read the installed package version instead of hardcoding it, so the handshake
+# and the version-skew registry report the real running code version.
+SERVER_VERSION = NEO_VERSION
 DASHBOARD_PORT = 7777
 # Periodic re-ingest interval for the dashboard-owner process.
 INGEST_INTERVAL_SEC = 30
