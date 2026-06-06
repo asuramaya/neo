@@ -2,10 +2,11 @@
 """
 neo — see what Claude Code hides from you
 
-  python3 neo.py              # ingest + setup + dashboard
-  python3 neo.py --setup      # install hooks only
+  python3 neo.py              # setup + ingest + dashboard
+  python3 neo.py --setup      # install hooks, register MCP server, install daemon
   python3 neo.py --ingest     # ingest data only
   python3 neo.py --dashboard  # dashboard only
+  python3 neo.py --mcp        # run a one-off stdio MCP server (legacy; setup registers HTTP)
   python3 neo.py --port 8888  # custom port
   python3 neo.py --dashboard --no-open  # don't auto-launch browser
 """
