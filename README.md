@@ -83,22 +83,54 @@ tail -f ~/.neo/harness_log.jsonl
 
 ## MCP Surface
 
-`neo --setup` registers `neo-mcp` in Claude Code. On the next session start,
-Claude Code connects to it automatically and the dashboard opens locally.
+neo runs as a **single shared daemon per host**. That one process serves the
+dashboard *and* the MCP protocol over HTTP at `http://127.0.0.1:7777/mcp`,
+guarded by a per-host bearer token. `neo --setup` registers it in
+`~/.claude.json` as an `http` MCP server (not a per-session stdio subprocess),
+so every Claude Code session connects to the same URL — one neo process per
+host, no per-session fan-out, no version skew. On the next session start,
+Claude Code connects automatically and the dashboard opens locally.
 
-The server exposes tools for:
+Setup also installs a `systemd --user` service (`neo.service`) that keeps the
+daemon running — auto-start on login, restart on crash. Where `systemd --user`
+is unavailable, start it manually with `neo-mcp --http`. See
+[Daemon](#daemon) below.
 
-- status and hook health
-- row-count summaries and data accounting
-- reminder queries with file + line provenance
-- session and subagent genealogy
-- telemetry inspection
-- memory-file inspection
-- inferred state-model analysis
-- cross-signal correlations
+The server exposes 12 tools:
 
-The MCP server filters its own traffic out of hook queries by default
+| Tool | What it returns |
+| --- | --- |
+| `status` | setup health + the live process registry across sessions (roles, code versions, `version_skew` flag) |
+| `summary` | top-level row counts across all tables |
+| `data_accounting` | full measured/estimated accounting |
+| `tokens_report` | compact accounting totals with the measured-vs-estimated basis |
+| `query_reminders` | reminder rows with file + line provenance |
+| `query_sessions` | session list across projects with agent / compaction counts |
+| `query_agents` | subagent genealogy and messages |
+| `query_probe_events` | raw hook events, filterable by type |
+| `query_telemetry` | retained telemetry rows |
+| `query_memory_files` | persistent memory files per project |
+| `state_model` | inferred state-model labels |
+| `correlations` | cross-signal patterns (hook timeline, totals by type) |
+
+Tools that read hook events filter out neo's own MCP traffic by default
 (`include_self=false`) so observer overhead does not contaminate the picture.
+
+## Daemon
+
+`neo --setup` writes a `systemd --user` unit at
+`~/.config/systemd/user/neo.service` and enables + starts it. The unit runs the
+shared daemon (`neo-mcp --http`), which owns the dashboard, periodic ingest, and
+the HTTP `/mcp` endpoint. If multiple neo processes start, they elect a single
+owner via a per-host lock; followers serve queries against the shared DB and
+take over if the owner dies.
+
+```bash
+systemctl --user status neo      # check the daemon
+systemctl --user stop neo        # stop it
+systemctl --user disable neo     # stop it auto-starting on login
+neo-mcp --http                   # run the daemon manually (no systemd)
+```
 
 ## Evidence Model
 
@@ -142,8 +174,8 @@ That boundary is the whole reason the project exists.
 
 ```text
 src/neo/
-  app.py            setup, ingest, threaded HTTP server
-  mcp_server.py     stdio MCP server; auto-starts dashboard on initialize
+  app.py            setup, ingest, threaded HTTP server, systemd daemon install
+  mcp_server.py     HTTP MCP server (/mcp on the shared daemon); owner election + process registry
   db.py             SQLite ingest + query layer
   tokens.py         visible vs hidden channel accounting
   states.py         inferred state model + anomaly labels
@@ -167,11 +199,15 @@ neo installs async hooks for 20 Claude Code event types:
 
 ## Security
 
-- dashboard binds to `127.0.0.1` only and validates local `Host` headers
+- dashboard and `/mcp` endpoint bind to `127.0.0.1` only and validate local `Host` headers
+- the `/mcp` endpoint requires a per-host bearer token stored in `~/.neo/`
 - `POST /api/ingest` requires a same-origin browser request
 - `~/.neo/` is created with private permissions where the OS allows it
 - neo does not transmit your data anywhere
 - hooks run async and do not block Claude Code operation
+- setup installs a `systemd --user` service (`neo.service`) that auto-starts the
+  local daemon on login and restarts it on crash; remove it with
+  `systemctl --user disable --now neo` (see [Daemon](#daemon))
 - no dependencies beyond Python stdlib
 
 ## Requirements
