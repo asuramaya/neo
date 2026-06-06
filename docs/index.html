@@ -7,274 +7,355 @@
   <meta name="description" content="Local workflow forensics for Claude Code: reminders found on disk, transcripts, retained telemetry rows, hooks, and memory artifacts surfaced from local files.">
   <style>
     :root {
-      --bg: #070b08;
+      --bg: #05080620;
+      --win: #0a0f0b;
+      --bar: #0e150f;
       --fg: #d7eedb;
       --muted: #84a98c;
-      --line: rgba(120, 180, 132, 0.16);
+      --line: rgba(120, 180, 132, 0.18);
       --accent: #68ff86;
       --code: #f0e68c;
+      --dim: #c3d8c7;
     }
     * { box-sizing: border-box; }
-    html { scroll-behavior: smooth; }
+    html, body { height: 100%; }
     body {
       margin: 0;
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
       color: var(--fg);
-      background: var(--bg);
-      line-height: 1.7;
+      background:
+        radial-gradient(circle at 20% 0%, rgba(40, 120, 60, 0.10), transparent 40%),
+        #04060500, #050805;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      overflow: hidden;
       -webkit-font-smoothing: antialiased;
     }
     a { color: var(--accent); text-decoration: none; }
     a:hover { text-decoration: underline; }
     code { color: var(--code); }
-    .wrap {
-      width: min(720px, calc(100% - 40px));
-      margin: 0 auto;
-      padding: 48px 0 80px;
-    }
-    .topline {
-      color: var(--muted);
-      font-size: 12px;
-      letter-spacing: 0.04em;
-      margin-bottom: 56px;
-    }
-    h1 {
-      font-size: 40px;
-      letter-spacing: -0.03em;
-      margin: 0 0 6px;
-    }
-    .lede {
-      color: var(--fg);
-      font-size: 19px;
-      margin: 0 0 24px;
-    }
-    p { color: #c3d8c7; margin: 0 0 16px; }
-    .hero-row {
+
+    .console {
+      width: min(960px, 100%);
+      height: min(700px, calc(100vh - 40px));
       display: flex;
-      gap: 28px;
-      align-items: flex-start;
-      margin-bottom: 40px;
-    }
-    .hero-row img {
-      width: 120px;
-      height: 120px;
-      object-fit: cover;
+      flex-direction: column;
+      background: var(--win);
       border: 1px solid var(--line);
+      border-radius: 10px;
+      box-shadow: 0 30px 90px rgba(0, 0, 0, 0.55);
+      overflow: hidden;
+    }
+
+    /* title bar */
+    .titlebar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 14px;
+      background: var(--bar);
+      border-bottom: 1px solid var(--line);
       flex-shrink: 0;
     }
-    .links {
-      display: flex;
-      gap: 18px;
-      flex-wrap: wrap;
-      font-size: 14px;
-      margin-top: 8px;
+    .dots { display: flex; gap: 7px; }
+    .dots i {
+      width: 11px; height: 11px; border-radius: 50%;
+      display: block; background: #2b3a2f;
     }
-    section { margin-top: 48px; }
-    h2 {
-      font-size: 13px;
-      text-transform: uppercase;
-      letter-spacing: 0.12em;
+    .dots i:nth-child(1) { background: #ff5f56; }
+    .dots i:nth-child(2) { background: #ffbd2e; }
+    .dots i:nth-child(3) { background: #27c93f; }
+    .title {
       color: var(--muted);
-      font-weight: 600;
-      border-bottom: 1px solid var(--line);
-      padding-bottom: 8px;
-      margin: 0 0 20px;
+      font-size: 12.5px;
+      letter-spacing: 0.02em;
     }
-    h3 {
-      font-size: 16px;
-      margin: 24px 0 6px;
-      letter-spacing: -0.01em;
-    }
-    h3:first-of-type { margin-top: 0; }
-    .stats {
-      list-style: none;
-      padding: 0;
-      margin: 0;
-    }
-    .stats li {
+    .title b { color: var(--fg); font-weight: 600; }
+
+    /* tabs */
+    .tabs {
       display: flex;
-      gap: 16px;
-      padding: 10px 0;
+      gap: 0;
+      background: var(--bar);
       border-bottom: 1px solid var(--line);
-      align-items: baseline;
+      flex-shrink: 0;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .tabs::-webkit-scrollbar { display: none; }
+    .tab {
+      appearance: none;
+      background: transparent;
+      border: 0;
+      border-right: 1px solid var(--line);
+      border-bottom: 2px solid transparent;
+      color: var(--muted);
+      font-family: inherit;
+      font-size: 12.5px;
+      letter-spacing: 0.04em;
+      padding: 11px 18px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .tab:hover { color: var(--fg); background: rgba(104, 255, 134, 0.04); }
+    .tab[aria-selected="true"] {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+      background: rgba(104, 255, 134, 0.06);
+    }
+
+    /* panes */
+    .panes { flex: 1; position: relative; overflow: hidden; }
+    .pane {
+      position: absolute;
+      inset: 0;
+      overflow-y: auto;
+      padding: 26px 30px 30px;
+      display: none;
+      scrollbar-width: thin;
+      scrollbar-color: var(--line) transparent;
+    }
+    .pane.active { display: block; }
+    .pane::-webkit-scrollbar { width: 9px; }
+    .pane::-webkit-scrollbar-thumb { background: var(--line); border-radius: 9px; }
+
+    .prompt { color: var(--muted); font-size: 12.5px; margin: 0 0 16px; }
+    .prompt::before { content: "$ "; color: var(--accent); }
+
+    h1 { font-size: 34px; letter-spacing: -0.03em; margin: 0 0 4px; }
+    .lede { font-size: 18px; margin: 0 0 18px; color: var(--fg); }
+    h2 {
+      font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em;
+      color: var(--muted); font-weight: 600;
+      border-bottom: 1px solid var(--line); padding-bottom: 7px; margin: 0 0 16px;
+    }
+    h3 { font-size: 15px; margin: 20px 0 5px; letter-spacing: -0.01em; }
+    h3:first-of-type { margin-top: 0; }
+    p { color: var(--dim); margin: 0 0 14px; line-height: 1.65; font-size: 14.5px; }
+
+    .overview-top { display: flex; gap: 26px; align-items: flex-start; }
+    .overview-top img {
+      width: 110px; height: 110px; object-fit: cover;
+      border: 1px solid var(--line); border-radius: 6px; flex-shrink: 0;
+    }
+    .links { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13.5px; margin-top: 6px; }
+
+    .stats { list-style: none; padding: 0; margin: 0; }
+    .stats li {
+      display: flex; gap: 16px; padding: 11px 0;
+      border-bottom: 1px solid var(--line); align-items: baseline;
     }
     .stats li:last-child { border-bottom: 0; }
-    .stats .val {
-      color: var(--accent);
-      font-size: 18px;
-      min-width: 72px;
-      flex-shrink: 0;
+    .stats .val { color: var(--accent); font-size: 18px; min-width: 72px; flex-shrink: 0; }
+    .stats .desc { color: var(--dim); font-size: 13.5px; line-height: 1.55; flex: 1; }
+    .stats .tag {
+      flex-shrink: 0; align-self: center;
+      font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--muted); border: 1px solid var(--line);
+      border-radius: 3px; padding: 2px 6px; white-space: nowrap;
     }
-    .stats .desc { color: #c3d8c7; font-size: 14px; }
+
     ul.plain { padding-left: 20px; margin: 0; }
-    ul.plain li { margin: 4px 0; color: #c3d8c7; font-size: 14px; }
+    ul.plain li { margin: 5px 0; color: var(--dim); font-size: 13.5px; line-height: 1.5; }
+
     pre {
-      margin: 12px 0 0;
-      padding: 14px 16px;
-      overflow: auto;
-      border: 1px solid var(--line);
-      background: rgba(0, 0, 0, 0.3);
-      color: #dfffe2;
-      font-size: 13px;
-      line-height: 1.6;
+      margin: 10px 0 0; padding: 13px 15px; overflow: auto;
+      border: 1px solid var(--line); border-radius: 6px;
+      background: rgba(0, 0, 0, 0.35); color: #dfffe2;
+      font-size: 13px; line-height: 1.6;
     }
-    footer {
-      margin-top: 64px;
-      padding-top: 16px;
+
+    /* status bar */
+    .statusbar {
+      flex-shrink: 0;
+      display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+      padding: 8px 14px;
+      background: var(--bar);
       border-top: 1px solid var(--line);
-      color: var(--muted);
-      font-size: 13px;
-      display: flex;
-      justify-content: space-between;
-      gap: 16px;
-      flex-wrap: wrap;
+      color: var(--muted); font-size: 11.5px; letter-spacing: 0.03em;
     }
-    @media (max-width: 560px) {
-      .hero-row { flex-direction: column-reverse; align-items: flex-start; }
+    .statusbar .cursor { color: var(--accent); }
+    .cursor::after {
+      content: "▋"; margin-left: 2px;
+      animation: blink 1.1s steps(1) infinite;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    @media (max-width: 600px) {
+      body { padding: 0; }
+      .console { height: 100vh; border-radius: 0; border: 0; }
+      .overview-top { flex-direction: column-reverse; align-items: flex-start; }
+      .pane { padding: 20px; }
     }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="topline">neo · local workflow forensics · claude code</div>
-
-    <div class="hero-row">
-      <div>
-        <h1>neo</h1>
-        <p class="lede">The interesting part is what stayed on disk.</p>
-        <p>
-          neo reads Claude Code's local artifacts directly: reminder text found on
-          disk, raw transcripts, subagent copies, retained telemetry rows, memory
-          files, and hook-visible lifecycle events. It indexes them into SQLite and
-          exposes them through a dashboard and MCP server running on the same machine.
-        </p>
-        <div class="links">
-          <a href="https://github.com/asuramaya/neo">repo</a>
-          <a href="#install">install</a>
-          <a href="#surfaces">surfaces</a>
-          <a href="https://github.com/asuramaya/neo/blob/main/README.md">readme</a>
-        </div>
-      </div>
-      <img src="https://raw.githubusercontent.com/asuramaya/neo/main/neo.jpg" alt="neo mascot">
+  <main class="console">
+    <div class="titlebar">
+      <div class="dots"><i></i><i></i><i></i></div>
+      <div class="title"><b>neo</b> — local workflow forensics · claude code</div>
     </div>
 
-    <section>
-      <h2>Why it exists</h2>
-      <p>
-        Claude Code exports cleaner transcripts than the local corpus actually
-        contains. The export boundary strips some of the most interesting material,
-        so neo starts from raw JSONL and local state instead of the cleaned
-        transcript. The dashboard binds to localhost, the database lives under
-        <code>~/.neo/</code>, and the project does not transmit your data anywhere.
-      </p>
-    </section>
+    <nav class="tabs" role="tablist" aria-label="sections">
+      <button class="tab" role="tab" aria-selected="true"  data-pane="overview">overview</button>
+      <button class="tab" role="tab" aria-selected="false" data-pane="evidence">evidence</button>
+      <button class="tab" role="tab" aria-selected="false" data-pane="surfaces">surfaces</button>
+      <button class="tab" role="tab" aria-selected="false" data-pane="captures">captures</button>
+      <button class="tab" role="tab" aria-selected="false" data-pane="install">install</button>
+    </nav>
 
-    <section>
-      <h2>From one local corpus</h2>
-      <ul class="stats">
-        <li>
-          <span class="val">714</span>
-          <span class="desc">hidden reminder rows found on disk in a single local corpus.</span>
-        </li>
-        <li>
-          <span class="val">62.5%</span>
-          <span class="desc">of local data volume came from context outside the visible chat transcript in one sample corpus.</span>
-        </li>
-        <li>
-          <span class="val">2.7x</span>
-          <span class="desc">local evidence volume relative to what the UI would suggest from the primary conversation alone.</span>
-        </li>
-        <li>
-          <span class="val">varies</span>
-          <span class="desc">telemetry rows only count what is still retained on disk. Absence does not prove upload or deletion.</span>
-        </li>
-      </ul>
-    </section>
+    <div class="panes">
+      <!-- OVERVIEW -->
+      <section class="pane active" id="overview" role="tabpanel">
+        <p class="prompt">neo --about</p>
+        <div class="overview-top">
+          <div>
+            <h1>neo</h1>
+            <p class="lede">The interesting part is what stayed on disk.</p>
+            <p>
+              neo reads Claude Code's local artifacts directly: reminder text found on
+              disk, raw transcripts, subagent copies, retained telemetry rows, memory
+              files, and hook-visible lifecycle events. It indexes them into SQLite and
+              exposes them through a dashboard and MCP server running on the same machine.
+            </p>
+            <div class="links">
+              <a href="https://github.com/asuramaya/neo">repo</a>
+              <a href="https://github.com/asuramaya/neo/blob/main/README.md">readme</a>
+              <a href="https://github.com/asuramaya/neo/blob/main/security_best_practices_report.md">security</a>
+            </div>
+          </div>
+          <img src="https://raw.githubusercontent.com/asuramaya/neo/main/neo.jpg" alt="neo mascot">
+        </div>
+        <h3>Why it exists</h3>
+        <p>
+          Claude Code exports cleaner transcripts than the local corpus actually
+          contains. The export boundary strips some of the most interesting material,
+          so neo starts from raw JSONL and local state instead of the cleaned
+          transcript. The dashboard binds to localhost, the database lives under
+          <code>~/.neo/</code>, and the project does not transmit your data anywhere.
+        </p>
+      </section>
 
-    <section>
-      <h2>What it surfaces</h2>
-      <h3>Reminder injections and raw transcripts</h3>
-      <p>
-        neo reads <code>~/.claude/projects/*.jsonl</code> directly, including system
-        reminders and channel material that the export path strips away.
-      </p>
-      <h3>Subagents, sidechains, and compaction churn</h3>
-      <p>
-        Hook events and local transcript structure make it possible to see when
-        context was copied, compacted, or routed somewhere the main UI does not
-        emphasize.
-      </p>
-      <h3>Measured vs estimated vs inferred</h3>
-      <p>
-        neo keeps row counts, cost heuristics, and anomaly interpretation in
-        separate lanes so the strongest claims stay attached to the strongest
-        evidence.
-      </p>
-    </section>
+      <!-- EVIDENCE -->
+      <section class="pane" id="evidence" role="tabpanel">
+        <p class="prompt">neo --accounting</p>
+        <h2>From one local corpus</h2>
+        <ul class="stats">
+          <li><span class="val">714</span><span class="desc">hidden reminder rows found on disk in a single local corpus.</span><span class="tag">measured</span></li>
+          <li><span class="val">62.5%</span><span class="desc">of local data volume came from context outside the visible chat transcript in one sample corpus.</span><span class="tag">measured / estimated</span></li>
+          <li><span class="val">2.7x</span><span class="desc">local evidence volume relative to what the UI would suggest from the primary conversation alone.</span><span class="tag">measured / estimated</span></li>
+          <li><span class="val">varies</span><span class="desc">telemetry rows only count what is still retained on disk. Absence does not prove upload or deletion.</span><span class="tag">measured</span></li>
+        </ul>
+        <h3>Measured vs estimated vs inferred</h3>
+        <p>
+          neo keeps row counts, cost heuristics, and anomaly interpretation in
+          separate lanes so the strongest claims stay attached to the strongest
+          evidence. Row counts are <b>measured</b>. The hidden-context share and
+          the multiplier are <b>measured</b> when the transcript carries
+          API-reported token usage, and <b>estimated</b> from on-disk byte sizes
+          when it does not. State-model labels are <b>inferred</b>.
+        </p>
+      </section>
 
-    <section id="surfaces">
-      <h2>Surfaces</h2>
-      <h3>Dashboard — browser-first local inspection</h3>
-      <p>
-        Summary cards, reminders with provenance, sessions, agents, correlations,
-        retained telemetry, memory files, and heuristic state-model analysis served
-        from localhost.
-      </p>
-      <h3>MCP — query from inside Claude Code</h3>
-      <p>
-        <code>neo-mcp</code> registers into Claude Code so the local evidence can be
-        queried from inside the same tool it is inspecting.
-      </p>
-      <h3>Terminal — quick accounting without the UI</h3>
-      <p>
-        <code>neo-tokens</code> and <code>neo-states</code> give you the accounting
-        and state-model views directly when a browser is unnecessary.
-      </p>
-    </section>
+      <!-- SURFACES -->
+      <section class="pane" id="surfaces" role="tabpanel">
+        <p class="prompt">neo --surfaces</p>
+        <h2>How you read it</h2>
+        <h3>Dashboard — browser-first local inspection</h3>
+        <p>
+          Summary cards, reminders with provenance, sessions, agents, correlations,
+          retained telemetry, memory files, and heuristic state-model analysis served
+          from localhost.
+        </p>
+        <h3>MCP — query from inside Claude Code</h3>
+        <p>
+          <code>neo-mcp</code> registers into Claude Code so the local evidence can be
+          queried from inside the same tool it is inspecting.
+        </p>
+        <h3>Terminal — quick accounting without the UI</h3>
+        <p>
+          <code>neo-tokens</code> and <code>neo-states diagram</code> give you the
+          accounting and state-model views directly when a browser is unnecessary.
+        </p>
+      </section>
 
-    <section>
-      <h2>What it captures</h2>
-      <h3>Reads from</h3>
-      <ul class="plain">
-        <li><code>~/.claude/projects/*.jsonl</code> for full transcripts and reminders</li>
-        <li><code>~/.claude/projects/*/subagents/</code> for spawned files and sidechains</li>
-        <li><code>~/.neo/harness_log.jsonl</code> for hook events and compaction traces</li>
-        <li><code>~/.claude/telemetry/</code> for telemetry rows currently retained on disk</li>
-        <li><code>~/.claude/projects/*/memory/</code> for persistent seeded memory</li>
-        <li><code>~/.claude/tasks/</code> for task lifecycle state</li>
-      </ul>
-      <h3>Cannot capture</h3>
-      <ul class="plain">
-        <li>server-side reasoning or model internals that never land on disk</li>
-        <li>the contents of any secondary channel not persisted locally</li>
-        <li>whether absent telemetry rows were uploaded, deleted, or never written locally</li>
-        <li>system prompt assembly inside the compiled binary</li>
-        <li>HTTPS request and response bodies without a proxy</li>
-      </ul>
-    </section>
+      <!-- CAPTURES -->
+      <section class="pane" id="captures" role="tabpanel">
+        <p class="prompt">neo --paths</p>
+        <h2>What it captures</h2>
+        <h3>Reads from</h3>
+        <ul class="plain">
+          <li><code>~/.claude/projects/*.jsonl</code> for full transcripts and reminders</li>
+          <li><code>~/.claude/projects/*/subagents/</code> for spawned files and sidechains</li>
+          <li><code>~/.neo/harness_log.jsonl</code> for hook events and compaction traces</li>
+          <li><code>~/.claude/telemetry/</code> for telemetry rows currently retained on disk</li>
+          <li><code>~/.claude/projects/*/memory/</code> for persistent seeded memory</li>
+          <li><code>~/.claude/tasks/</code> for task lifecycle state</li>
+        </ul>
+        <h3>Cannot capture</h3>
+        <ul class="plain">
+          <li>server-side reasoning or model internals that never land on disk</li>
+          <li>the contents of any secondary channel not persisted locally</li>
+          <li>whether absent telemetry rows were uploaded, deleted, or never written locally</li>
+          <li>system prompt assembly inside the compiled binary</li>
+          <li>HTTPS request and response bodies without a proxy</li>
+        </ul>
+      </section>
 
-    <section id="install">
-      <h2>Install</h2>
-      <p>
-        The package is <code>neo-harnesster</code>. The command stays <code>neo</code>.
-      </p>
-      <pre>pipx install neo-harnesster
+      <!-- INSTALL -->
+      <section class="pane" id="install" role="tabpanel">
+        <p class="prompt">neo --install</p>
+        <h2>Install</h2>
+        <p>The package is <code>neo-harnesster</code>. The command stays <code>neo</code>.</p>
+        <pre>pipx install neo-harnesster
 neo</pre>
-      <h3>From source</h3>
-      <p>Inspect the implementation or keep the tool next to your own experiments.</p>
-      <pre>git clone https://github.com/asuramaya/neo.git
+        <h3>With pip</h3>
+        <pre>pip install neo-harnesster
+neo</pre>
+        <h3>From source</h3>
+        <p>Inspect the implementation or keep the tool next to your own experiments.</p>
+        <pre>git clone https://github.com/asuramaya/neo.git
 cd neo
 python3 neo.py</pre>
-    </section>
+      </section>
+    </div>
 
-    <footer>
-      <div>neo · built from the thing it monitors</div>
-      <div>
-        <a href="https://github.com/asuramaya/neo">repo</a> ·
-        <a href="https://github.com/asuramaya/neo/blob/main/README.md">readme</a> ·
-        <a href="https://github.com/asuramaya/neo/blob/main/security_best_practices_report.md">security</a>
-      </div>
-    </footer>
-  </div>
+    <div class="statusbar">
+      <span>localhost only · data stays on disk</span>
+      <span class="cursor">neo@localhost:~</span>
+    </div>
+  </main>
+
+  <script>
+    const tabs = Array.from(document.querySelectorAll('.tab'));
+    const panes = Array.from(document.querySelectorAll('.pane'));
+    function select(name) {
+      tabs.forEach(t => t.setAttribute('aria-selected', String(t.dataset.pane === name)));
+      panes.forEach(p => p.classList.toggle('active', p.id === name));
+      if (location.hash.slice(1) !== name) history.replaceState(null, '', '#' + name);
+    }
+    tabs.forEach((t, i) => {
+      t.addEventListener('click', () => select(t.dataset.pane));
+      t.addEventListener('keydown', e => {
+        if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+          e.preventDefault();
+          const dir = e.key === 'ArrowRight' ? 1 : -1;
+          const next = tabs[(i + dir + tabs.length) % tabs.length];
+          next.focus(); select(next.dataset.pane);
+        }
+      });
+    });
+    // number keys 1-5 jump to tabs
+    window.addEventListener('keydown', e => {
+      const n = parseInt(e.key, 10);
+      if (n >= 1 && n <= tabs.length && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        select(tabs[n - 1].dataset.pane);
+      }
+    });
+    const initial = location.hash.slice(1);
+    if (initial && tabs.some(t => t.dataset.pane === initial)) select(initial);
+  </script>
 </body>
 </html>
